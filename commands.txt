@@ -1,0 +1,28 @@
+FRONTEND:
+# 1. Navigate to the project frontend directory
+cd "c:\Users\waizt\OneDrive\Desktop\Websites\Leads Qualifier\frontend"
+
+# 2. Add Node to your Path
+$env:Path += ";C:\laragon\bin\nodejs\node-v22"
+
+# 3. Start the server
+npm run dev -- --host 127.0.0.1
+
+
+BACKEND:
+# 1. Navigate to the project directory
+cd "c:\Users\waizt\OneDrive\Desktop\Websites\Leads Qualifier"
+
+# 2. Tell Python where your installed library packages are
+$env:PYTHONPATH="C:\Users\waizt\AppData\Roaming\Python\Python313\site-packages"
+
+# 3. Start the backend server
+C:\laragon\bin\python\python-3.13\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+
+
+
+
+
+
+$env:Path += ";C:\laragon\bin\php\php-8.3.30-Win32-vs16-x64"
+php artisan serve

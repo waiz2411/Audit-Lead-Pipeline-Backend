@@ -1,0 +1,23 @@
+# Frontend (tracked in its own repository)
+frontend/
+
+# Databases
+*.db
+*.db-journal
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# Local screenshots
+backend/static/screenshots/
+backend/static/screenshots/*
+
+# OS metadata
+.DS_Store
+Thumbs.db
