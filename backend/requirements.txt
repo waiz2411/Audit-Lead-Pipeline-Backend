@@ -10,3 +10,4 @@ pillow==10.3.0
 pandas==2.2.2
 python-multipart==0.0.9
 psutil==5.9.8
+duckduckgo-search>=6.0.0

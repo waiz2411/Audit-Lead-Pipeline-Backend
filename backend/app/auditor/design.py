@@ -119,6 +119,26 @@ def run_design_audit(html_content: str, responsive_issues: list = None) -> tuple
             'severity': 'Low'
         })
 
+    # 9. Copyright Year Heuristic
+    import re
+    from datetime import datetime
+    current_year = datetime.now().year
+    copyright_matches = re.findall(r'(?:©|&copy;|copyright)\s*(?:20\d{2}\s*[-–—]\s*)?(20\d{2})', html_content, re.IGNORECASE)
+    if copyright_matches:
+        years = [int(y) for y in copyright_matches if y.isdigit()]
+        if years:
+            max_copyright_year = max(years)
+            if max_copyright_year < (current_year - 2): # e.g. < 2024
+                issues.append({
+                    'category': 'Design',
+                    'problem': f'Outdated Copyright Year (© {max_copyright_year})',
+                    'why_it_matters': 'An old copyright date signals to visitors and prospects that the site is inactive or unmaintained.',
+                    'recommendation': 'Update footer copyright notice and refresh site content & design.',
+                    'impact': 'High',
+                    'priority': 'High',
+                    'severity': 'High'
+                })
+
     # Integrate responsive issues if any
     if responsive_issues:
         for r_issue in responsive_issues:
@@ -134,3 +154,4 @@ def run_design_audit(html_content: str, responsive_issues: list = None) -> tuple
 
     design_score = max(0.0, float(100 - len(issues) * 12))
     return design_score, issues
+

@@ -2,6 +2,8 @@ import asyncio
 import os
 import time
 import traceback
+import re
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from .database import SessionLocal
@@ -242,7 +244,33 @@ async def audit_domain(domain: str, result_id: int):
         # Merge issues
         all_issues = seo_issues + perf_issues + a11y_issues + sec_issues + design_issues
 
+        # Extract contact email if found
+        contact_email = None
+        if html_content:
+            try:
+                soup = BeautifulSoup(html_content, 'html.parser')
+                # 1. Look for mailto: links
+                for a in soup.find_all('a', href=True):
+                    href = a['href']
+                    if href.startswith('mailto:'):
+                        email = href.split('mailto:')[1].split('?')[0].strip()
+                        if email and '@' in email:
+                            contact_email = email
+                            break
+                # 2. Look via regex scanner if not found in mailto
+                if not contact_email:
+                    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html_content)
+                    invalid_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.js', '.css', '.webp')
+                    for email in emails:
+                        email_lower = email.lower()
+                        if not any(email_lower.endswith(ext) for ext in invalid_extensions):
+                            contact_email = email
+                            break
+            except Exception as e:
+                print(f"Error extracting email: {e}")
+
         # Update DB fields
+        db_result.contact_email = contact_email
         db_result.score_seo = round(score_seo, 1)
         db_result.score_performance = round(score_perf, 1)
         db_result.score_accessibility = round(score_a11y, 1)

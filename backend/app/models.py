@@ -39,6 +39,12 @@ class AuditResult(Base):
     meta_info = Column(JSON, nullable=True) # title, description, h1s, image count, links etc.
     issues = Column(JSON, default=list) # [{category, problem, why_it_matters, recommendation, impact, priority, severity}]
     
+    # Outreach info
+    contact_email = Column(String, nullable=True)
+    outreach_status = Column(String, default='Unsent') # Unsent, Sending, Sent, Failed
+    outreach_error = Column(Text, nullable=True)
+    outreach_sent_at = Column(DateTime, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     job = relationship('Job', back_populates='results')
 
@@ -51,3 +57,16 @@ class Settings(Base):
     screenshot_resolution_desktop = Column(String, default='1920x1080')
     dark_mode = Column(Integer, default=1) # 1 = dark, 0 = light
     export_format = Column(String, default='csv')
+    
+    # SMTP Settings
+    smtp_host = Column(String, default='smtp.gmail.com')
+    smtp_port = Column(Integer, default=587)
+    smtp_username = Column(String, default='')
+    smtp_password = Column(String, default='')
+    smtp_sender_name = Column(String, default='Audit Team')
+    smtp_sender_email = Column(String, default='')
+    smtp_use_tls = Column(Integer, default=1) # 1 = True, 0 = False
+    
+    # Email Template
+    email_template_subject = Column(String, default='Website Audit Report for {domain}')
+    email_template_body = Column(Text, default='Hi there,\n\nWe audited your website {domain} and found some performance and SEO issues. Your overall score is {score_overall}/100.\n\nBest regards,\nAudit Team')
