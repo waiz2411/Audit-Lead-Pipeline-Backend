@@ -49,14 +49,6 @@ if os.path.exists(FRONTEND_DIR):
     def read_index():
         return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-    @app.get("/{full_path:path}")
-    def catch_all(full_path: str):
-        if full_path.startswith("api") or full_path.startswith("static") or full_path.startswith("assets"):
-            raise HTTPException(status_code=404, detail="Not found")
-        index_path = os.path.join(FRONTEND_DIR, "index.html")
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        raise HTTPException(status_code=404, detail="Not found")
 
 
 # Startup background task worker loop
@@ -551,6 +543,18 @@ def save_search_leads_as_job(payload: SaveLeadsJobRequest, db: Session = Depends
 
     db.commit()
     return {"status": "success", "job_id": new_job.id, "saved_count": len(payload.leads)}
+
+
+if os.path.exists(FRONTEND_DIR):
+    @app.get("/{full_path:path}")
+    def catch_all(full_path: str):
+        if full_path.startswith("api") or full_path.startswith("static") or full_path.startswith("assets"):
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Not found")
+
 
 
 
