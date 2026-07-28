@@ -31,6 +31,7 @@ const LinkedinIcon = ({ className = "w-4 h-4" }) => (
 
 function App() {
   const [keyword, setKeyword] = useState('');
+  const [location, setLocation] = useState('');
   const [maxResults, setMaxResults] = useState(15);
   const [deepEnrich, setDeepEnrich] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -82,6 +83,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           keyword: keyword.trim(),
+          location: location.trim(),
           max_results: parseInt(maxResults),
           deep_enrich: deepEnrich
         })
@@ -268,29 +270,41 @@ function App() {
 
               <form onSubmit={handleExtractLeads} className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                  {/* Search Input */}
-                  <div className="md:col-span-7 relative">
-                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-indigo-400" />
+                  {/* Keyword / Niche Input */}
+                  <div className="md:col-span-4 relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-indigo-400" />
                     <input
                       type="text"
                       value={keyword}
                       onChange={(e) => setKeyword(e.target.value)}
-                      placeholder="e.g. Plumbers in Miami, FL or Dentists in Austin, TX"
+                      placeholder="Niche (e.g. Plumbers, Dentists, Roofers)"
+                      className="w-full bg-slate-950/80 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white placeholder-slate-500 rounded-2xl pl-12 pr-4 py-3.5 text-base transition-all outline-none"
+                    />
+                  </div>
+
+                  {/* City / Location Input */}
+                  <div className="md:col-span-4 relative">
+                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-indigo-400" />
+                    <input
+                      type="text"
+                      value={location}
+                      onChange={(e) => setLocation(e.target.value)}
+                      placeholder="Location (e.g. Miami, FL or Austin, TX)"
                       className="w-full bg-slate-950/80 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white placeholder-slate-500 rounded-2xl pl-12 pr-4 py-3.5 text-base transition-all outline-none"
                     />
                   </div>
 
                   {/* Max Results Selector */}
-                  <div className="md:col-span-3">
+                  <div className="md:col-span-2">
                     <select
                       value={maxResults}
                       onChange={(e) => setMaxResults(e.target.value)}
                       className="w-full bg-slate-950/80 border border-slate-700/80 focus:border-indigo-500 text-white rounded-2xl px-4 py-3.5 text-base outline-none cursor-pointer"
                     >
-                      <option value="10">10 Leads (Fast)</option>
-                      <option value="15">15 Leads (Standard)</option>
-                      <option value="25">25 Leads (Extended)</option>
-                      <option value="50">50 Leads (Deep Extraction)</option>
+                      <option value="10">10 Leads</option>
+                      <option value="15">15 Leads</option>
+                      <option value="25">25 Leads</option>
+                      <option value="50">50 Leads</option>
                     </select>
                   </div>
 

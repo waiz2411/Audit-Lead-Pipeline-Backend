@@ -465,7 +465,7 @@ def extract_gmaps_leads(payload: GMapsSearchRequest):
     """
     Extract Google Maps business listings and enrich with email, phone, and social links.
     """
-    raw_leads = get_google_maps_leads(payload.keyword, max_results=payload.max_results)
+    raw_leads = get_google_maps_leads(payload.keyword, payload.location or "", max_results=payload.max_results)
     enriched_leads = []
 
     def _enrich_single_lead(lead_dict: dict) -> GMapsLeadSchema:

@@ -127,6 +127,7 @@ class GMapsLeadSchema(BaseModel):
 
 class GMapsSearchRequest(BaseModel):
     keyword: str
+    location: Optional[str] = ""
     max_results: int = 15
     deep_enrich: bool = True
 
