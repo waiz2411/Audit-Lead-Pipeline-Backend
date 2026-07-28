@@ -428,7 +428,7 @@ def _process_lead_item(item: dict, outdated_only: bool, headers: dict) -> Search
     
     html_content = ""
     try:
-        resp = requests.get(url, headers=headers, timeout=3, allow_redirects=True)
+        resp = requests.get(url, headers=headers, timeout=6, allow_redirects=True)
         if resp.status_code == 200:
             html_content = resp.text
     except Exception:
