@@ -457,92 +457,90 @@ def _process_lead_item(item: dict, outdated_only: bool, headers: dict) -> Search
         contacts=contacts
     )
 
-@app.post("/api/v1/search-leads", response_model=List[SearchLeadResultSchema])
-def search_leads(payload: KeywordSearchRequest):
-    """
-    Search DuckDuckGo by keyword, audit target websites concurrently for outdated designs,
-    and extract contact details (Email, Instagram, Facebook, WhatsApp, LinkedIn).
-    """
-    raw_results = search_duckduckgo(payload.keyword, max_results=payload.max_results)
-    lead_results = []
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+from .services.gmaps_scraper import get_google_maps_leads
+from .schemas import GMapsSearchRequest, GMapsLeadSchema
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [
-            executor.submit(_process_lead_item, item, payload.outdated_only, headers)
-            for item in raw_results
-        ]
-        for future in as_completed(futures):
+@app.post("/api/v1/extract-gmaps-leads", response_model=List[GMapsLeadSchema])
+def extract_gmaps_leads(payload: GMapsSearchRequest):
+    """
+    Extract Google Maps business listings and enrich with email, phone, and social links.
+    """
+    raw_leads = get_google_maps_leads(payload.keyword, max_results=payload.max_results)
+    enriched_leads = []
+
+    def _enrich_single_lead(lead_dict: dict) -> GMapsLeadSchema:
+        website = lead_dict.get('website', '')
+        domain = ""
+        if website and website.startswith('http'):
+            parsed = urlparse(website)
+            domain = parsed.netloc.lower()
+            if domain.startswith('www.'):
+                domain = domain[4:]
+
+        contacts = {'emails': [], 'instagram': [], 'facebook': [], 'linkedin': [], 'whatsapp': [], 'phones': []}
+        if domain and payload.deep_enrich:
             try:
-                res = future.result()
-                if res is not None:
-                    lead_results.append(res)
-            except Exception as e:
+                contacts = scrape_website_contacts(domain)
+            except Exception:
                 pass
 
-    return lead_results
+        email = contacts['emails'][0] if contacts['emails'] else ""
+        phone = lead_dict.get('phone') or (contacts['phones'][0] if contacts['phones'] else "")
+        instagram = contacts['instagram'][0] if contacts['instagram'] else ""
+        facebook = contacts['facebook'][0] if contacts['facebook'] else ""
+        linkedin = contacts['linkedin'][0] if contacts['linkedin'] else ""
+        whatsapp = contacts['whatsapp'][0] if contacts['whatsapp'] else ""
 
-from .schemas import SaveLeadsJobRequest
-
-@app.post("/api/v1/search-leads/save-job")
-def save_search_leads_as_job(payload: SaveLeadsJobRequest, db: Session = Depends(get_db)):
-    """
-    Saves discovered keyword search leads directly into an Audit Pipeline Job.
-    """
-    if not payload.leads:
-        raise HTTPException(status_code=400, detail="No leads provided to save.")
-
-    new_job = Job(
-        name=payload.job_name or "Keyword Search Leads",
-        total_websites=len(payload.leads),
-        completed_websites=len(payload.leads),
-        running_websites=0,
-        failed_websites=0,
-        status="Finished"
-    )
-    db.add(new_job)
-    db.commit()
-    db.refresh(new_job)
-
-    for lead in payload.leads:
-        contact_email = lead.contacts.emails[0] if lead.contacts.emails else None
-        issues = [{
-            'category': 'Design',
-            'problem': reason,
-            'why_it_matters': 'Outdated website elements detected during lead discovery.',
-            'recommendation': 'Refresh layout and styling to modern standards.',
-            'impact': 'High',
-            'priority': 'High',
-            'severity': 'High'
-        } for reason in lead.outdated_reasons]
-
-        audit_res = AuditResult(
-            job_id=new_job.id,
-            domain=lead.domain,
-            status='Finished',
-            score_overall=lead.score_design,
-            score_seo=60.0,
-            score_performance=70.0,
-            score_accessibility=65.0,
-            score_security=50.0,
-            score_responsive=55.0 if lead.score_design < 65 else 85.0,
-            score_design=lead.score_design,
-            meta_info={
-                'title': lead.title,
-                'snippet': lead.snippet,
-                'contacts': lead.contacts.dict()
-            },
-            issues=issues,
-            contact_email=contact_email,
-            outreach_status='Unsent'
+        return GMapsLeadSchema(
+            name=lead_dict.get('name', 'Local Business'),
+            category=lead_dict.get('category', 'Local Business'),
+            rating=lead_dict.get('rating', 4.5),
+            reviews_count=lead_dict.get('reviews_count', 12),
+            phone=phone,
+            website=website,
+            address=lead_dict.get('address', payload.keyword),
+            email=email,
+            emails=contacts['emails'],
+            instagram=instagram,
+            facebook=facebook,
+            linkedin=linkedin,
+            whatsapp=whatsapp,
+            google_maps_url=lead_dict.get('google_maps_url', '')
         )
-        db.add(audit_res)
 
-    db.commit()
-    return {"status": "success", "job_id": new_job.id, "saved_count": len(payload.leads)}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(_enrich_single_lead, l) for l in raw_leads]
+        for f in as_completed(futures):
+            try:
+                res = f.result()
+                if res:
+                    enriched_leads.append(res)
+            except Exception:
+                pass
+
+    return enriched_leads
+
+@app.post("/api/v1/gmaps-leads/export-csv")
+def export_gmaps_leads_csv(leads: List[GMapsLeadSchema]):
+    import csv
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Business Name", "Category", "Rating", "Reviews Count", "Phone Number",
+        "Primary Email", "Website", "Address", "Instagram", "Facebook", "LinkedIn", "WhatsApp"
+    ])
+    for l in leads:
+        writer.writerow([
+            l.name, l.category, l.rating, l.reviews_count, l.phone,
+            l.email, l.website, l.address, l.instagram, l.facebook, l.linkedin, l.whatsapp
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=google_maps_leads.csv"}
+    )
+
 
 
 if os.path.exists(FRONTEND_DIR):
