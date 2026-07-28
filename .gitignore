@@ -1,5 +1,6 @@
-# Frontend (tracked in its own repository)
-frontend/
+# Frontend (commented out to allow fullstack Docker build on Render)
+# frontend/
+
 
 # Databases
 *.db

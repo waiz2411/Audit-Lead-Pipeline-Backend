@@ -49,6 +49,16 @@ if os.path.exists(FRONTEND_DIR):
     def read_index():
         return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
+    @app.get("/{full_path:path}")
+    def catch_all(full_path: str):
+        if full_path.startswith("api") or full_path.startswith("static") or full_path.startswith("assets"):
+            raise HTTPException(status_code=404, detail="Not found")
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Not found")
+
+
 # Startup background task worker loop
 @app.on_event("startup")
 async def startup_event():

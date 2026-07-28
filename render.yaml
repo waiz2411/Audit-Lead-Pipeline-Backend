@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: audit-lead-pipeline
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /api/dashboard/stats
+    envVars:
+      - key: PORT
+        value: 8000
