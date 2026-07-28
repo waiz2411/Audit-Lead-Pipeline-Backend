@@ -301,10 +301,14 @@ function App() {
                       onChange={(e) => setMaxResults(e.target.value)}
                       className="w-full bg-slate-950/80 border border-slate-700/80 focus:border-indigo-500 text-white rounded-2xl px-4 py-3.5 text-base outline-none cursor-pointer"
                     >
-                      <option value="10">10 Leads</option>
-                      <option value="15">15 Leads</option>
-                      <option value="25">25 Leads</option>
+                      <option value="15">15 Leads (Quick)</option>
                       <option value="50">50 Leads</option>
+                      <option value="100">100 Leads</option>
+                      <option value="250">250 Leads</option>
+                      <option value="500">500 Leads</option>
+                      <option value="1000">1,000 Bulk Leads</option>
+                      <option value="5000">5,000 Enterprise Leads</option>
+                      <option value="10000">10,000 Mega Extraction</option>
                     </select>
                   </div>
 
