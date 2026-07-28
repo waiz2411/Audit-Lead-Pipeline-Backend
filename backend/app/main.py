@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 import pandas as pd
 import json
+from urllib.parse import urlparse
 
 from .database import engine, Base, get_db
 from .models import Job, AuditResult, Settings
