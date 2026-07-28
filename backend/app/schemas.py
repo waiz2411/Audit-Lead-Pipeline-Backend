@@ -22,6 +22,70 @@ class SettingsSchema(BaseModel):
     class Config:
         from_attributes = True
 
+class IssueSchema(BaseModel):
+    category: str
+    problem: str
+    why_it_matters: str
+    recommendation: str
+    impact: str
+    priority: str
+    severity: str
+
+class AuditResultSchema(BaseModel):
+    id: int
+    job_id: int
+    domain: str
+    status: str
+    error_log: Optional[str]
+    screenshot_path_desktop: Optional[str]
+    screenshot_path_tablet: Optional[str]
+    screenshot_path_mobile: Optional[str]
+    score_overall: float
+    score_seo: float
+    score_performance: float
+    score_accessibility: float
+    score_security: float
+    score_responsive: float
+    score_design: float
+    meta_info: Optional[Dict[str, Any]]
+    issues: List[Dict[str, Any]]
+    contact_email: Optional[str] = None
+    outreach_status: Optional[str] = 'Unsent'
+    outreach_error: Optional[str] = None
+    outreach_sent_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class JobSchema(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+    total_websites: int
+    completed_websites: int
+    running_websites: int
+    failed_websites: int
+    status: str
+
+    class Config:
+        from_attributes = True
+
+class JobDetailSchema(JobSchema):
+    results: List[AuditResultSchema] = []
+
+class ManualJobRequest(BaseModel):
+    name: str
+    domains: List[str]
+
+class ContactUpdateRequest(BaseModel):
+    contact_email: Optional[str] = None
+
+class OutreachRequest(BaseModel):
+    recipient_email: str
+    subject: Optional[str] = None
+    body: Optional[str] = None
+
 class ContactInfoSchema(BaseModel):
     emails: List[str] = []
     instagram: List[str] = []
