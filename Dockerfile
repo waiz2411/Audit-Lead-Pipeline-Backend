@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for Audit Lead Pipeline (Playwright + FastAPI + React)
+# Lightweight Multi-stage Dockerfile for Audit Lead Pipeline (Playwright + FastAPI + React)
 
 # Stage 1: Build React Frontend
 FROM node:20-alpine AS frontend-builder
@@ -8,8 +8,8 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: Python FastAPI runtime with preinstalled Playwright Chromium dependencies
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+# Stage 2: Lightweight Python 3.11 image
+FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PORT=8000
@@ -19,6 +19,9 @@ WORKDIR /app
 # Install Python requirements
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+
+# Install Playwright Chromium & system dependencies (~400MB vs 2.5GB)
+RUN playwright install --with-deps chromium
 
 # Copy Backend codebase
 COPY backend /app/backend
