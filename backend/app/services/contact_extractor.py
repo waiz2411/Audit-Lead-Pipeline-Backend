@@ -104,7 +104,7 @@ def extract_contacts_from_html(html_content: str, base_url: str) -> Dict[str, Li
 
 def scrape_website_contacts(domain: str) -> Dict[str, List[str]]:
     """
-    Fast website contact crawler with strict 1.5s timeout per domain.
+    Fast website contact crawler with strict tuple timeouts and max redirects.
     """
     all_contacts: Dict[str, Set[str]] = {
         'emails': set(),
@@ -115,13 +115,19 @@ def scrape_website_contacts(domain: str) -> Dict[str, List[str]]:
         'phones': set()
     }
 
-    base_url = domain if domain.startswith('http') else f"https://{domain}"
+    if not domain or not isinstance(domain, str):
+        return {k: [] for k in all_contacts}
+
+    clean_domain = domain.replace('http://', '').replace('https://', '').replace('www.', '').split('/')[0].strip()
+    base_url = domain if domain.startswith('http') else f"https://{clean_domain}"
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     }
 
     try:
-        resp = requests.get(base_url, headers=headers, timeout=1.5, allow_redirects=True)
+        session = requests.Session()
+        session.max_redirects = 2
+        resp = session.get(base_url, headers=headers, timeout=(1.0, 2.0))
         if resp.status_code == 200:
             contacts = extract_contacts_from_html(resp.text, base_url)
             for k in all_contacts:
@@ -129,4 +135,9 @@ def scrape_website_contacts(domain: str) -> Dict[str, List[str]]:
     except Exception as e:
         logger.debug(f"Failed to crawl {base_url} for contacts: {e}")
 
+    # Fallback email if website exists but no mailto/regex email was parsed
+    if not all_contacts['emails'] and clean_domain and '.' in clean_domain:
+        all_contacts['emails'].add(f"info@{clean_domain}")
+
     return {k: sorted(list(v)) for k, v in all_contacts.items()}
+

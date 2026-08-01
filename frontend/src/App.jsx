@@ -35,8 +35,11 @@ function App() {
   const [maxResults, setMaxResults] = useState(15);
   const [deepEnrich, setDeepEnrich] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [progressPercent, setProgressPercent] = useState(0);
+  const [progressMessage, setProgressMessage] = useState('');
   const [leads, setLeads] = useState([]);
   const [error, setError] = useState('');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   // Filters
   const [filterEmailOnly, setFilterEmailOnly] = useState(false);
@@ -64,6 +67,19 @@ function App() {
     localStorage.setItem('gmaps_bookmarked_leads', JSON.stringify(bookmarkedLeads));
   }, [bookmarkedLeads]);
 
+  useEffect(() => {
+    let timer;
+    if (loading) {
+      setElapsedSeconds(0);
+      timer = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setElapsedSeconds(0);
+    }
+    return () => clearInterval(timer);
+  }, [loading]);
+
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 2500);
@@ -76,9 +92,11 @@ function App() {
     setLoading(true);
     setError('');
     setLeads([]);
+    setProgressPercent(5);
+    setProgressMessage('Launching Playwright Google Maps extractor...');
 
     try {
-      const resp = await fetch(`${API_BASE}/api/v1/extract-gmaps-leads`, {
+      const resp = await fetch(`${API_BASE}/api/v1/stream-gmaps-leads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -89,16 +107,41 @@ function App() {
         })
       });
 
-      if (resp.ok) {
-        const data = await resp.json();
-        setLeads(data);
-        if (data.length === 0) {
-          setError('No Google Maps leads found for this keyword. Try broadening your location or niche query.');
-        } else {
-          showToast(`Successfully extracted ${data.length} local business leads!`);
+      if (resp.ok && resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const evt = JSON.parse(line.trim());
+              if (evt.percent !== undefined) setProgressPercent(evt.percent);
+              if (evt.message) setProgressMessage(evt.message);
+
+              if (evt.type === 'complete') {
+                setLeads(evt.leads || []);
+                if (!evt.leads || evt.leads.length === 0) {
+                  setError('No Google Maps leads found for this keyword. Try broadening your location or niche query.');
+                } else {
+                  showToast(`Successfully extracted ${evt.leads.length} local business leads!`);
+                }
+              }
+            } catch (parseErr) {
+              console.error("Parse line error:", parseErr);
+            }
+          }
         }
       } else {
-        const errData = await resp.json();
+        const errData = await resp.json().catch(() => ({}));
         setError(errData.detail || 'Extraction failed. Please check server logs.');
       }
     } catch (err) {
@@ -200,6 +243,16 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white">
+      {/* Top Sticky Global Loading Bar */}
+      {loading && (
+        <div className="fixed top-0 left-0 right-0 z-50 h-1.5 bg-slate-950/80 backdrop-blur-sm overflow-hidden">
+          <div
+            className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-400 transition-all duration-300 ease-out shadow-[0_0_12px_#6366f1]"
+            style={{ width: `${Math.max(3, progressPercent)}%` }}
+          />
+        </div>
+      )}
+
       {/* Toast Notification */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 bg-indigo-600 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-3 border border-indigo-400 animate-bounce">
@@ -350,6 +403,51 @@ function App() {
                   </label>
                 </div>
               </form>
+
+              {/* Progress Bar & Real-time Status */}
+              {loading && (
+                <div className="bg-slate-950/95 border border-indigo-500/50 rounded-2xl p-6 shadow-2xl shadow-indigo-950/40 space-y-4 mt-6 backdrop-blur-xl transition-all duration-300">
+                  
+                  {/* Header & Percentage */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center space-x-2.5 text-indigo-300 font-semibold text-base">
+                        <RefreshCw className="w-5 h-5 animate-spin text-indigo-400 flex-shrink-0" />
+                        <span>{progressMessage || 'Extracting local business leads from Google Maps...'}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-400 pl-7">
+                        <span className="bg-indigo-500/10 text-indigo-300 px-2.5 py-0.5 rounded-md border border-indigo-500/20 font-medium">
+                          {progressPercent < 45 ? 'Step 1/2: Scraping Google Maps' : 'Step 2/2: Enriching Emails & Phones'}
+                        </span>
+                        <span className="font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                          Elapsed: {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')}s
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2 self-start sm:self-auto">
+                      <span className="font-mono text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-purple-400 to-emerald-400">
+                        {progressPercent}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Progress Track */}
+                  <div className="w-full bg-slate-900 rounded-full h-4 p-0.5 border border-slate-800 overflow-hidden relative shadow-inner">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-600 via-purple-500 to-emerald-400 transition-all duration-300 ease-out shadow-lg shadow-indigo-500/40 relative"
+                      style={{ width: `${Math.max(2, progressPercent)}%` }}
+                    >
+                      <div className="absolute inset-0 bg-white/20 animate-pulse rounded-full" />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs text-slate-400 font-medium pt-2 border-t border-slate-900/80">
+                    <span>Query: <strong className="text-slate-200">"{keyword} {location ? `in ${location}` : ''}"</strong></span>
+                    <span>Target: <strong className="text-slate-200">{maxResults} Leads</strong></span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

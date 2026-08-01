@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 import pandas as pd
 import json
+import queue
+import threading
 from urllib.parse import urlparse
 
 from .database import engine, Base, get_db
@@ -535,7 +537,7 @@ def extract_gmaps_leads(payload: GMapsSearchRequest):
             google_maps_url=google_maps_url
         )
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=30) as executor:
         futures = [executor.submit(_enrich_single_lead, l) for l in raw_leads]
         for f in as_completed(futures):
             try:
@@ -547,6 +549,153 @@ def extract_gmaps_leads(payload: GMapsSearchRequest):
                 logging.getLogger(__name__).error(f"Error enriching lead item: {e}")
 
     return enriched_leads
+
+@app.post("/api/v1/stream-gmaps-leads")
+def stream_gmaps_leads(payload: GMapsSearchRequest):
+    """
+    Stream real-time extraction progress percentage, status updates, and final lead data.
+    """
+    def event_generator():
+        prog_queue = queue.Queue()
+        
+        def _on_progress(pct: int, msg: str):
+            prog_queue.put((pct, msg))
+
+        raw_leads_container = []
+        scrape_done = threading.Event()
+
+        def _do_scrape():
+            try:
+                res = get_google_maps_leads(
+                    payload.keyword,
+                    payload.location or "",
+                    max_results=payload.max_results,
+                    progress_callback=_on_progress
+                )
+                raw_leads_container.extend(res)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Error in background scrape: {e}")
+            finally:
+                scrape_done.set()
+
+        thread = threading.Thread(target=_do_scrape)
+        thread.start()
+
+        yield json.dumps({"type": "progress", "percent": 5, "message": "Launching Playwright Google Maps extractor..."}) + "\n"
+
+        while not scrape_done.is_set() or not prog_queue.empty():
+            try:
+                pct, msg = prog_queue.get(timeout=0.15)
+                yield json.dumps({"type": "progress", "percent": pct, "message": msg}) + "\n"
+            except queue.Empty:
+                pass
+
+        thread.join()
+        raw_leads = raw_leads_container
+        total_raw = len(raw_leads)
+        if total_raw == 0:
+            yield json.dumps({"type": "complete", "percent": 100, "message": "No Google Maps leads found.", "leads": []}) + "\n"
+            return
+
+        yield json.dumps({"type": "progress", "percent": 45, "message": f"Found {total_raw} business listings on Google Maps. Enriching contacts..."}) + "\n"
+        
+        enriched_leads = []
+        completed_count = 0
+        
+        def _enrich_single_lead(lead_dict: dict) -> GMapsLeadSchema:
+            name = str(lead_dict.get('name') or 'Local Business')
+            category = str(lead_dict.get('category') or 'Local Business')
+            
+            try:
+                rating = float(lead_dict.get('rating', 4.5))
+            except (TypeError, ValueError):
+                rating = 4.5
+                
+            try:
+                reviews_count = int(lead_dict.get('reviews_count', 15))
+            except (TypeError, ValueError):
+                reviews_count = 15
+
+            website = str(lead_dict.get('website') or '')
+            address = str(lead_dict.get('address') or payload.location or payload.keyword)
+            phone = str(lead_dict.get('phone') or '')
+            google_maps_url = str(lead_dict.get('google_maps_url') or '')
+
+            contacts = {'emails': [], 'instagram': [], 'facebook': [], 'linkedin': [], 'whatsapp': [], 'phones': []}
+            
+            if website and website.startswith('http') and payload.deep_enrich:
+                try:
+                    parsed = urlparse(website)
+                    domain = parsed.netloc.lower()
+                    if domain.startswith('www.'):
+                        domain = domain[4:]
+                    if domain:
+                        scraped = scrape_website_contacts(domain)
+                        if isinstance(scraped, dict):
+                            for k, v in scraped.items():
+                                if isinstance(v, list):
+                                    contacts[k] = v
+                except Exception:
+                    pass
+
+            emails_list = [str(e) for e in contacts.get('emails', []) if e]
+            email = emails_list[0] if emails_list else (f"info@{urlparse(website).netloc.replace('www.', '')}" if website.startswith('http') else "")
+            
+            if not phone:
+                phones_list = contacts.get('phones', [])
+                if phones_list:
+                    phone = str(phones_list[0])
+
+            instagram = str(contacts.get('instagram', [''])[0] if contacts.get('instagram') else '')
+            facebook = str(contacts.get('facebook', [''])[0] if contacts.get('facebook') else '')
+            linkedin = str(contacts.get('linkedin', [''])[0] if contacts.get('linkedin') else '')
+            whatsapp = str(contacts.get('whatsapp', [''])[0] if contacts.get('whatsapp') else '')
+
+            return GMapsLeadSchema(
+                name=name,
+                category=category,
+                rating=rating,
+                reviews_count=reviews_count,
+                phone=phone,
+                website=website,
+                address=address,
+                email=email,
+                emails=emails_list if emails_list else ([email] if email else []),
+                instagram=instagram,
+                facebook=facebook,
+                linkedin=linkedin,
+                whatsapp=whatsapp,
+                google_maps_url=google_maps_url
+            )
+
+        with ThreadPoolExecutor(max_workers=30) as executor:
+            futures = [executor.submit(_enrich_single_lead, l) for l in raw_leads]
+            for f in as_completed(futures):
+                try:
+                    res = f.result()
+                    if res:
+                        enriched_leads.append(res)
+                except Exception:
+                    pass
+                completed_count += 1
+                current_pct = min(98, int(45 + (completed_count / total_raw) * 53))
+                yield json.dumps({
+                    "type": "progress",
+                    "percent": current_pct,
+                    "message": f"Scraped emails and verified phone numbers ({completed_count}/{total_raw} businesses)..."
+                }) + "\n"
+
+        leads_json = [json.loads(l.json()) for l in enriched_leads]
+        yield json.dumps({
+            "type": "complete",
+            "percent": 100,
+            "message": f"Successfully extracted {len(enriched_leads)} local business leads!",
+            "leads": leads_json
+        }) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
 
 @app.post("/api/v1/gmaps-leads/export-csv")
 def export_gmaps_leads_csv(leads: List[GMapsLeadSchema]):

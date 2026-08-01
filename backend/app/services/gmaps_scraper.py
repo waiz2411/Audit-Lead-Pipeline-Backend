@@ -17,6 +17,16 @@ EXCLUDED_DOMAINS = {
     'bbb.org', 'houzz.com', 'mapquest.com', 'manta.com'
 }
 
+TOP_CANADIAN_CITIES = [
+    "Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa",
+    "Edmonton", "Winnipeg", "Quebec City", "Hamilton", "Kitchener", "Victoria", "Halifax"
+]
+
+TOP_US_CITIES = [
+    "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
+    "Philadelphia", "San Antonio", "San Diego", "Dallas", "Austin", "Miami", "Seattle"
+]
+
 def extract_all_payloads(obj: Any) -> List[Any]:
     """
     Locates and parses all Google Maps RPC JSON payloads embedded in window.APP_INITIALIZATION_STATE.
@@ -40,12 +50,16 @@ def extract_all_payloads(obj: Any) -> List[Any]:
 
 def extract_phone_from_node(node: Any) -> str:
     """
-    Recursively finds phone numbers (+92..., +1..., 03..., 021...) inside a place node.
+    Recursively finds valid phone numbers (+1..., +92..., 03..., 021..., (416)...) inside a place node while ignoring floats, coordinates, and RPC tokens.
     """
     if isinstance(node, str):
         val = node.strip()
-        if (val.startswith('+') or val.startswith('03') or val.startswith('021') or val.startswith('(')) and len(re.sub(r'\D', '', val)) >= 7:
-            return val
+        # Reject strings with letters, commas, or decimal floats
+        if not re.search(r'[a-zA-Z,]', val) and not re.match(r'^-?\d+\.\d+$', val):
+            digits = re.sub(r'\D', '', val)
+            if 7 <= len(digits) <= 15:
+                if val.startswith('+') or val.startswith('03') or val.startswith('021') or val.startswith('(') or '-' in val or ' ' in val:
+                    return val
     elif isinstance(node, list):
         for item in node:
             p = extract_phone_from_node(item)
@@ -61,7 +75,6 @@ def extract_phone_from_node(node: Any) -> str:
 def parse_gmaps_app_state(app_state: Any, keyword: str, location: str, max_results: int) -> List[Dict[str, Any]]:
     """
     Extracts 100% REAL Google Maps Place data directly from window.APP_INITIALIZATION_STATE.
-    Instantly populates Real Name, Full Address, Real Phone Number, Official Website, Rating, and Review Count.
     """
     leads = []
     seen = set()
@@ -151,22 +164,56 @@ def parse_gmaps_app_state(app_state: Any, keyword: str, location: str, max_resul
 
     return leads[:max_results]
 
-def scrape_real_google_maps(keyword: str, location: str = "", max_results: int = 15) -> List[Dict[str, Any]]:
+def generate_sub_queries(keyword: str, location: str, target_count: int) -> List[str]:
+    loc_clean = location.strip().lower() if location else ""
+    queries = []
+    
+    primary = f"{keyword.strip()} in {location.strip()}" if location and location.strip() else keyword.strip()
+    queries.append(primary)
+
+    if target_count <= 20:
+        return queries
+
+    if any(c in loc_clean for c in ["canada", "cananada", "ca"]):
+        for city in TOP_CANADIAN_CITIES:
+            queries.append(f"{keyword.strip()} in {city} Canada")
+    elif any(c in loc_clean for c in ["usa", "us", "united states"]):
+        for city in TOP_US_CITIES:
+            queries.append(f"{keyword.strip()} in {city}")
+    else:
+        queries.extend([
+            f"best {keyword.strip()} in {location.strip()}",
+            f"{keyword.strip()} company in {location.strip()}",
+            f"{keyword.strip()} services in {location.strip()}",
+            f"top {keyword.strip()} agency in {location.strip()}"
+        ])
+
+    return queries
+
+def scrape_real_google_maps(keyword: str, location: str = "", max_results: int = 15, progress_callback=None) -> List[Dict[str, Any]]:
     """
     Extract 100% REAL Google Maps business listings using Playwright Headless Chromium.
-    Fast response (< 2.5 seconds) by parsing window.APP_INITIALIZATION_STATE.
+    Ultra-fast response with resource routing and multi-query feed scrolling.
     """
-    query = f"{keyword.strip()} in {location.strip()}" if location and location.strip() else keyword.strip()
-    encoded_query = quote(query)
-    maps_url = f"https://www.google.com/maps/search/{encoded_query}?hl=en"
+    queries = generate_sub_queries(keyword, location, max_results)
     
     leads = []
+    seen_names = set()
+
+    if progress_callback:
+        progress_callback(5, "Launching Playwright Google Maps browser...")
 
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--blink-settings=imagesEnabled=false'
+                ]
             )
             context = browser.new_context(
                 viewport={'width': 1280, 'height': 800},
@@ -174,83 +221,140 @@ def scrape_real_google_maps(keyword: str, location: str = "", max_results: int =
                 locale='en-US'
             )
             page = context.new_page()
-            page.goto(maps_url, wait_until='domcontentloaded', timeout=12000)
-            page.wait_for_timeout(2000)
 
-            # Extract full place state from window.APP_INITIALIZATION_STATE
-            app_state = page.evaluate('() => window.APP_INITIALIZATION_STATE')
-            if app_state:
-                leads = parse_gmaps_app_state(app_state, keyword, location, max_results)
-                logger.info(f"Instant state extraction retrieved {len(leads)} real leads for '{query}'")
+            # Abort heavy resources (images, fonts, media, analytics) for lightning speed
+            def block_resources(route):
+                req = route.request
+                if req.resource_type in ["image", "media", "font"]:
+                    route.abort()
+                elif any(domain in req.url for domain in ["google-analytics.com", "googletagmanager.com", "doubleclick.net"]):
+                    route.abort()
+                else:
+                    route.continue_()
 
-            # Fallback to DOM elements if state returned fewer items
-            if len(leads) < max_results:
-                title_elems = page.query_selector_all('div.qBF1Pd')
-                seen_names = {l['name'].lower() for l in leads}
+            page.route("**/*", block_resources)
 
-                for elem in title_elems:
-                    try:
-                        name = elem.inner_text().strip()
-                        if not name or len(name) < 2 or name.lower() in seen_names or any(x in name.lower() for x in ['results', 'filter', 'google', 'maps']):
-                            continue
+            for idx, q in enumerate(queries):
+                if len(leads) >= max_results:
+                    break
 
-                        card = elem.evaluate_handle('el => el.closest("div.Nv251d, div.THD22c, div[role=\\"article\\"]") || el.parentElement.parentElement.parentElement')
-                        card_element = card.as_element()
-                        text = card_element.inner_text() if card_element else ""
+                if progress_callback:
+                    calc_pct = min(40, 10 + int((idx / max(1, len(queries))) * 20))
+                    progress_callback(calc_pct, f"Searching Google Maps for '{q}'...")
 
-                        rating = 4.6
-                        reviews_count = 28
-                        rating_match = re.search(r'(\d\.\d)\s*\(([\d,]+)\)', text)
-                        if rating_match:
-                            rating = float(rating_match.group(1))
-                            reviews_count = int(rating_match.group(2).replace(',', ''))
+                encoded_query = quote(q)
+                maps_url = f"https://www.google.com/maps/search/{encoded_query}?hl=en"
 
-                        phone = ""
-                        phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', text)
-                        if phone_match:
-                            phone = phone_match.group(0)
+                try:
+                    page.goto(maps_url, wait_until='domcontentloaded', timeout=10000)
+                    page.wait_for_timeout(1200)
 
-                        website = ""
-                        if card_element:
-                            web_a = card_element.query_selector('a[data-item-id="authority"], a[aria-label*="website"]')
-                            if web_a:
-                                raw_href = web_a.get_attribute('href') or ""
-                                if raw_href.startswith('http') and not any(d in raw_href for d in EXCLUDED_DOMAINS):
-                                    website = raw_href
+                    # Extract full place state from window.APP_INITIALIZATION_STATE
+                    app_state = page.evaluate('() => window.APP_INITIALIZATION_STATE')
+                    if app_state:
+                        q_leads = parse_gmaps_app_state(app_state, keyword, location, max_results)
+                        for l in q_leads:
+                            k = l['name'].lower()
+                            if k not in seen_names:
+                                seen_names.add(k)
+                                leads.append(l)
+                                if len(leads) >= max_results:
+                                    break
+                        logger.info(f"State extraction retrieved {len(q_leads)} leads for query '{q}'")
+                        if progress_callback:
+                            calc_pct = min(42, 15 + int((len(leads) / max_results) * 25))
+                            progress_callback(calc_pct, f"Extracted {len(leads)} business listings from Google Maps...")
 
-                        address = f"{location.strip()}" if location else "Local Area"
-                        lines = [l.strip() for l in text.split('\n') if l.strip()]
-                        for l in lines[1:4]:
-                            if any(char.isdigit() for char in l) or 'St' in l or 'Ave' in l or 'Blvd' in l or 'Rd' in l:
-                                address = l
-                                break
+                    # DOM Feed Scroll Fallback if state returned fewer items
+                    scroll_attempts = 0
+                    while len(leads) < max_results and scroll_attempts < 6:
+                        title_elems = page.query_selector_all('div.qBF1Pd')
+                        new_found = 0
 
-                        seen_names.add(name.lower())
-                        leads.append({
-                            'name': name,
-                            'category': f"{keyword.strip().title()} Business",
-                            'rating': rating,
-                            'reviews_count': reviews_count,
-                            'phone': phone,
-                            'website': website,
-                            'address': address,
-                            'google_maps_url': f"https://www.google.com/maps/search/{quote(name + ' ' + (location or ''))}"
-                        })
-                        if len(leads) >= max_results:
+                        for elem in title_elems:
+                            try:
+                                name = elem.inner_text().strip()
+                                k = name.lower()
+                                if not name or len(name) < 2 or k in seen_names or any(x in k for x in ['results', 'filter', 'google', 'maps', 'privacy']):
+                                    continue
+
+                                card = elem.evaluate_handle('el => el.closest("div.Nv251d, div.THD22c, div[role=\\"article\\"]") || el.parentElement.parentElement.parentElement')
+                                card_element = card.as_element()
+                                text = card_element.inner_text() if card_element else ""
+
+                                rating = 4.6
+                                reviews_count = 28
+                                rating_match = re.search(r'(\d\.\d)\s*\(([\d,]+)\)', text)
+                                if rating_match:
+                                    rating = float(rating_match.group(1))
+                                    reviews_count = int(rating_match.group(2).replace(',', ''))
+
+                                phone = ""
+                                phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', text)
+                                if phone_match:
+                                    phone = phone_match.group(0)
+
+                                website = ""
+                                if card_element:
+                                    web_a = card_element.query_selector('a[data-item-id="authority"], a[aria-label*="website"]')
+                                    if web_a:
+                                        raw_href = web_a.get_attribute('href') or ""
+                                        if raw_href.startswith('http') and not any(d in raw_href for d in EXCLUDED_DOMAINS):
+                                            website = raw_href
+
+                                address = f"{location.strip()}" if location else "Local Area"
+                                lines = [l.strip() for l in text.split('\n') if l.strip()]
+                                for l in lines[1:4]:
+                                    if any(char.isdigit() for char in l) or 'St' in l or 'Ave' in l or 'Blvd' in l or 'Rd' in l:
+                                        address = l
+                                        break
+
+                                seen_names.add(k)
+                                leads.append({
+                                    'name': name,
+                                    'category': f"{keyword.strip().title()} Business",
+                                    'rating': rating,
+                                    'reviews_count': reviews_count,
+                                    'phone': phone,
+                                    'website': website,
+                                    'address': address,
+                                    'google_maps_url': f"https://www.google.com/maps/search/{quote(name + ' ' + (location or ''))}"
+                                })
+                                new_found += 1
+                                if progress_callback:
+                                    calc_pct = min(42, 15 + int((len(leads) / max_results) * 25))
+                                    progress_callback(calc_pct, f"Found {len(leads)} business listings on Google Maps...")
+                                if len(leads) >= max_results:
+                                    break
+                            except Exception as ex:
+                                logger.debug(f"Error parsing GMaps card: {ex}")
+
+                        if len(leads) >= max_results or new_found == 0:
                             break
-                    except Exception as ex:
-                        logger.debug(f"Error parsing GMaps card: {ex}")
+
+                        feed = page.locator('div[role="feed"]').first
+                        if feed.count() > 0:
+                            feed.evaluate('el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll", {bubbles:true})); }')
+                        else:
+                            page.mouse.wheel(0, 3000)
+
+                        page.wait_for_timeout(600)
+                        scroll_attempts += 1
+
+                except Exception as ex:
+                    logger.error(f"Error processing query '{q}': {ex}")
 
             browser.close()
     except Exception as e:
         logger.error(f"Playwright real Google Maps scrape failed: {e}")
 
-    return leads
+    return leads[:max_results]
 
-def get_google_maps_leads(keyword: str, location: str = "", max_results: int = 15) -> List[Dict[str, Any]]:
+def get_google_maps_leads(keyword: str, location: str = "", max_results: int = 15, progress_callback=None) -> List[Dict[str, Any]]:
     """
     Primary Entry Point: Extracts 100% REAL Google Maps listings.
     """
     logger.info(f"Extracting 100% REAL Google Maps leads for '{keyword}', '{location}' (max: {max_results})")
-    leads = scrape_real_google_maps(keyword, location, max_results)
+    leads = scrape_real_google_maps(keyword, location, max_results, progress_callback=progress_callback)
     return leads[:max_results]
+
