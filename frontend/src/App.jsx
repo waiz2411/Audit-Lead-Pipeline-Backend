@@ -375,7 +375,7 @@ function App() {
     }
   };
 
-  const currentLeadsList = activeTab === 'extractor' ? leads : bookmarkedLeads;
+  const currentLeadsList = (activeTab === 'extractor' || activeTab === 'csv') ? leads : bookmarkedLeads;
 
   const displayedLeads = currentLeadsList.filter(l => {
     if (filterEmailOnly && !l.email) return false;
