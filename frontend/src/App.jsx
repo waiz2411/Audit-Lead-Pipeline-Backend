@@ -192,12 +192,23 @@ function App() {
               if (evt.percent !== undefined) setProgressPercent(evt.percent);
               if (evt.message) setProgressMessage(evt.message);
 
+              if (evt.type === 'lead_item' && evt.lead) {
+                setLeads((prev) => [...prev, evt.lead]);
+              }
+
               if (evt.type === 'complete') {
-                setLeads(evt.leads || []);
-                if (!evt.leads || evt.leads.length === 0) {
-                  setError('No valid leads or website links found in uploaded CSV file.');
-                } else {
+                if (evt.leads && evt.leads.length > 0) {
+                  setLeads(evt.leads);
                   showToast(`Successfully enriched ${evt.leads.length} leads with extracted contact emails!`);
+                } else {
+                  setLeads((prev) => {
+                    if (prev.length === 0) {
+                      setError('No valid leads or website links found in uploaded CSV file.');
+                    } else {
+                      showToast(`Successfully enriched ${prev.length} leads with extracted contact emails!`);
+                    }
+                    return prev;
+                  });
                 }
               }
             } catch (parseErr) {

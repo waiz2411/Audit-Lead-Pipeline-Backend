@@ -801,7 +801,7 @@ async def stream_csv_enrich_leads(file: UploadFile = File(...)):
             linkedin = str(contacts.get('linkedin', [''])[0] if contacts.get('linkedin') else '')
             whatsapp = str(contacts.get('whatsapp', [''])[0] if contacts.get('whatsapp') else '')
 
-            return GMapsLeadSchema(
+            schema = GMapsLeadSchema(
                 name=name,
                 category=category,
                 rating=rating,
@@ -817,10 +817,10 @@ async def stream_csv_enrich_leads(file: UploadFile = File(...)):
                 whatsapp=whatsapp,
                 google_maps_url=gmaps_url
             )
+            return schema.dict() if hasattr(schema, 'dict') else schema.model_dump()
 
         enriched_leads = []
         completed_count = 0
-        last_pct = 15
 
         with ThreadPoolExecutor(max_workers=100) as executor:
             futures = [executor.submit(_enrich_row, r) for r in rows]
@@ -829,24 +829,24 @@ async def stream_csv_enrich_leads(file: UploadFile = File(...)):
                     res = f.result()
                     if res:
                         enriched_leads.append(res)
-                except Exception:
-                    pass
-                completed_count += 1
-                current_pct = min(98, int(15 + (completed_count / total_rows) * 83))
-                if current_pct > last_pct or completed_count % 5 == 0 or completed_count == total_rows:
-                    last_pct = current_pct
-                    yield json.dumps({
-                        "type": "progress",
-                        "percent": current_pct,
-                        "message": f"Crawling websites & extracting emails ({completed_count}/{total_rows} businesses)..."
-                    }) + "\n"
+                        completed_count += 1
+                        current_pct = min(98, int(15 + (completed_count / total_rows) * 83))
+                        yield json.dumps({
+                            "type": "lead_item",
+                            "percent": current_pct,
+                            "message": f"Crawling websites & extracting emails ({completed_count}/{total_rows} businesses)...",
+                            "lead": res
+                        }) + "\n"
+                except Exception as ex:
+                    import logging
+                    logging.getLogger(__name__).error(f"Error enriching row: {ex}")
+                    completed_count += 1
 
-        leads_json = [json.loads(l.json()) for l in enriched_leads]
         yield json.dumps({
             "type": "complete",
             "percent": 100,
             "message": f"Successfully processed CSV and enriched {len(enriched_leads)} leads with extracted emails!",
-            "leads": leads_json
+            "leads": enriched_leads
         }) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
