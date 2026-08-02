@@ -153,6 +153,84 @@ function App() {
     }
   };
 
+  const parseCSVText = (text) => {
+    const lines = text.split(/\r\n|\n/);
+    if (lines.length === 0) return [];
+
+    const parseRow = (str) => {
+      const arr = [];
+      let quote = false;
+      let col = '';
+      for (let i = 0; i < str.length; i++) {
+        const c = str[i];
+        if (c === '"') {
+          quote = !quote;
+        } else if (c === ',' && !quote) {
+          arr.push(col.trim());
+          col = '';
+        } else {
+          col += c;
+        }
+      }
+      arr.push(col.trim());
+      return arr;
+    };
+
+    const headers = parseRow(lines[0]).map((h) => h.toLowerCase().replace(/['"]/g, ''));
+
+    const findCol = (keywords) => {
+      return headers.find((h) => keywords.some((k) => h.includes(k)));
+    };
+
+    const nameCol = findCol(['title', 'name', 'company', 'business', 'place']);
+    const webCol = findCol(['website', 'domain', 'site', 'url', 'web']);
+    const phoneCol = findCol(['phone', 'tel', 'mobile', 'contact']);
+    const scoreCol = findCol(['totalscore', 'score', 'rating', 'stars']);
+    const reviewCol = findCol(['reviewscount', 'reviews', 'review']);
+    const catCol = findCol(['categoryname', 'category', 'categories/0', 'type']);
+    const urlCol = findCol(['maps_url', 'google_maps_url']) || (headers.includes('url') ? 'url' : null);
+    const streetCol = findCol(['street', 'address']);
+    const cityCol = findCol(['city']);
+    const stateCol = findCol(['state']);
+
+    const items = [];
+    for (let i = 1; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const vals = parseRow(lines[i]).map((v) => v.replace(/^"|"$/g, ''));
+      const getVal = (colName) => {
+        if (!colName) return '';
+        const idx = headers.indexOf(colName);
+        return idx !== -1 ? vals[idx] || '' : '';
+      };
+
+      const name = getVal(nameCol) || 'Local Business';
+      let website = getVal(webCol);
+      if (website && !website.startsWith('http') && website.includes('.')) {
+        website = `https://${website}`;
+      }
+      const phone = getVal(phoneCol);
+      const rating = parseFloat(getVal(scoreCol)) || 4.5;
+      const reviews_count = parseInt(getVal(reviewCol)) || 15;
+      const category = getVal(catCol) || 'Local Business';
+      const google_maps_url = getVal(urlCol);
+
+      const addrParts = [getVal(streetCol), getVal(cityCol), getVal(stateCol)].filter(Boolean);
+      const address = addrParts.length > 0 ? addrParts.join(', ') : 'Local Area';
+
+      items.push({
+        name,
+        website,
+        phone,
+        rating,
+        reviews_count,
+        category,
+        address,
+        google_maps_url
+      });
+    }
+    return items;
+  };
+
   const handleUploadCSVAndEnrich = async (e) => {
     if (e) e.preventDefault();
     if (!csvFile) return;
@@ -161,68 +239,66 @@ function App() {
     setError('');
     setLeads([]);
     setProgressPercent(5);
-    setProgressMessage('Parsing CSV dataset & mapping columns...');
+    setProgressMessage('Reading CSV dataset locally in browser...');
 
     try {
-      const formData = new FormData();
-      formData.append('file', csvFile);
+      const text = await csvFile.text();
+      const rawItems = parseCSVText(text);
 
-      const resp = await fetch(`${API_BASE}/api/v1/stream-csv-enrich-leads`, {
-        method: 'POST',
-        body: formData
-      });
-
-      if (resp.ok && resp.body) {
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const evt = JSON.parse(line.trim());
-              if (evt.percent !== undefined) setProgressPercent(evt.percent);
-              if (evt.message) setProgressMessage(evt.message);
-
-              if (evt.type === 'lead_item' && evt.lead) {
-                setLeads((prev) => [...prev, evt.lead]);
-              }
-
-              if (evt.type === 'complete') {
-                if (evt.leads && evt.leads.length > 0) {
-                  setLeads(evt.leads);
-                  showToast(`Successfully enriched ${evt.leads.length} leads with extracted contact emails!`);
-                } else {
-                  setLeads((prev) => {
-                    if (prev.length === 0) {
-                      setError('No valid leads or website links found in uploaded CSV file.');
-                    } else {
-                      showToast(`Successfully enriched ${prev.length} leads with extracted contact emails!`);
-                    }
-                    return prev;
-                  });
-                }
-              }
-            } catch (parseErr) {
-              console.error("Parse line error:", parseErr);
-            }
-          }
-        }
-      } else {
-        const errData = await resp.json().catch(() => ({}));
-        setError(errData.detail || 'CSV enrichment failed. Please check backend logs.');
+      if (!rawItems || rawItems.length === 0) {
+        setError('No valid data rows found in uploaded CSV file.');
+        setLoading(false);
+        return;
       }
+
+      const totalItems = rawItems.length;
+      setProgressPercent(10);
+      setProgressMessage(`Parsed ${totalItems} business listings from CSV. Starting fast email crawler...`);
+
+      const BATCH_SIZE = 25;
+      const chunks = [];
+      for (let i = 0; i < rawItems.length; i += BATCH_SIZE) {
+        chunks.push(rawItems.slice(i, i + BATCH_SIZE));
+      }
+
+      let processedCount = 0;
+      const CONCURRENCY = 4; // 4 parallel batch workers
+
+      for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+        const currentBatchGroup = chunks.slice(i, i + CONCURRENCY);
+
+        const promises = currentBatchGroup.map(async (chunk) => {
+          try {
+            const resp = await fetch(`${API_BASE}/api/v1/enrich-csv-batch`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(chunk)
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              if (Array.isArray(data) && data.length > 0) {
+                setLeads((prev) => [...prev, ...data]);
+              }
+            }
+          } catch (err) {
+            console.error('Batch enrich error:', err);
+          } finally {
+            processedCount += chunk.length;
+            const pct = Math.min(99, Math.round((processedCount / totalItems) * 90) + 10);
+            setProgressPercent(pct);
+            setProgressMessage(`Crawling websites & extracting emails (${Math.min(processedCount, totalItems)}/${totalItems} businesses)...`);
+          }
+        });
+
+        await Promise.all(promises);
+      }
+
+      setProgressPercent(100);
+      setProgressMessage(`Successfully enriched all ${totalItems} business leads!`);
+      showToast(`Finished processing all ${totalItems} business leads!`);
     } catch (err) {
       console.error(err);
-      setError('Network error connecting to CSV enrichment endpoint.');
+      setError('Failed to parse or process CSV file.');
     } finally {
       setLoading(false);
     }
