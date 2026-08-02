@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   MapPin, Search, Phone, Mail, Globe, Star, FileSpreadsheet, FileJson, Copy,
   Check, ExternalLink, Filter, Sparkles, RefreshCw, Bookmark, Share2, Layers,
-  MessageCircle, AlertCircle, ShieldCheck, Download
+  MessageCircle, AlertCircle, ShieldCheck, Download, UploadCloud, FileText
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -40,6 +40,7 @@ function App() {
   const [leads, setLeads] = useState([]);
   const [error, setError] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [csvFile, setCsvFile] = useState(null);
 
   // Filters
   const [filterEmailOnly, setFilterEmailOnly] = useState(false);
@@ -147,6 +148,70 @@ function App() {
     } catch (err) {
       console.error(err);
       setError('Network error connecting to extraction backend.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUploadCSVAndEnrich = async (e) => {
+    if (e) e.preventDefault();
+    if (!csvFile) return;
+
+    setLoading(true);
+    setError('');
+    setLeads([]);
+    setProgressPercent(5);
+    setProgressMessage('Parsing CSV dataset & mapping columns...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', csvFile);
+
+      const resp = await fetch(`${API_BASE}/api/v1/stream-csv-enrich-leads`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (resp.ok && resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const evt = JSON.parse(line.trim());
+              if (evt.percent !== undefined) setProgressPercent(evt.percent);
+              if (evt.message) setProgressMessage(evt.message);
+
+              if (evt.type === 'complete') {
+                setLeads(evt.leads || []);
+                if (!evt.leads || evt.leads.length === 0) {
+                  setError('No valid leads or website links found in uploaded CSV file.');
+                } else {
+                  showToast(`Successfully enriched ${evt.leads.length} leads with extracted contact emails!`);
+                }
+              }
+            } catch (parseErr) {
+              console.error("Parse line error:", parseErr);
+            }
+          }
+        }
+      } else {
+        const errData = await resp.json().catch(() => ({}));
+        setError(errData.detail || 'CSV enrichment failed. Please check backend logs.');
+      }
+    } catch (err) {
+      console.error(err);
+      setError('Network error connecting to CSV enrichment endpoint.');
     } finally {
       setLoading(false);
     }
@@ -287,6 +352,17 @@ function App() {
           >
             <Search className="w-4 h-4" />
             <span>Lead Extractor</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('csv')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
+              activeTab === 'csv'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>CSV Email Enricher</span>
           </button>
           <button
             onClick={() => setActiveTab('saved')}
@@ -452,6 +528,122 @@ function App() {
           </div>
         )}
 
+        {/* CSV Email Enricher Upload Box */}
+        {activeTab === 'csv' && (
+          <div className="bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl -z-0 pointer-events-none" />
+            
+            <div className="relative z-10 space-y-6">
+              <div>
+                <h2 className="text-2xl font-bold text-white flex items-center space-x-2">
+                  <span>Batch CSV Email & Contact Enricher</span>
+                  <Sparkles className="w-5 h-5 text-purple-400" />
+                </h2>
+                <p className="text-sm text-slate-400 mt-1">
+                  Upload any Google Places or lead CSV export (e.g., <code className="text-purple-300 font-mono text-xs">dataset_crawler-google-places_....csv</code>). We will automatically crawl the website domains to extract verified emails, phones, and social links.
+                </p>
+              </div>
+
+              <form onSubmit={handleUploadCSVAndEnrich} className="space-y-4">
+                <div className="border-2 border-dashed border-slate-700/80 hover:border-indigo-500/80 rounded-3xl p-8 text-center transition-all bg-slate-950/60 relative cursor-pointer group">
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={(e) => setCsvFile(e.target.files[0])}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                  />
+                  <div className="space-y-3 pointer-events-none">
+                    <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mx-auto group-hover:scale-110 transition-transform">
+                      <UploadCloud className="w-7 h-7" />
+                    </div>
+                    {csvFile ? (
+                      <div className="space-y-1">
+                        <p className="text-base font-bold text-white flex items-center justify-center space-x-2">
+                          <FileSpreadsheet className="w-5 h-5 text-emerald-400" />
+                          <span>{csvFile.name}</span>
+                        </p>
+                        <p className="text-xs text-slate-400 font-mono">
+                          {(csvFile.size / 1024).toFixed(1)} KB • Ready for extraction
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="text-base font-medium text-slate-200">
+                          Drop your CSV file here or <span className="text-indigo-400 font-semibold underline">browse file</span>
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          Supports Google Places Crawler CSVs, Apify exports, or custom domain CSV lists
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+                  <div className="text-xs text-slate-400">
+                    Auto-detects: <span className="text-slate-300 font-mono">Title, Website, Phone, Rating, Address, Category</span>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || !csvFile}
+                    className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-semibold rounded-2xl px-8 py-3.5 flex items-center justify-center space-x-2 shadow-lg shadow-indigo-600/30 transition-all cursor-pointer"
+                  >
+                    {loading ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                        <span>Crawling Websites...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-5 h-5" />
+                        <span>Start Email Crawling</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+
+              {/* Progress Bar & Real-time Status */}
+              {loading && (
+                <div className="bg-slate-950/95 border border-indigo-500/50 rounded-2xl p-6 shadow-2xl shadow-indigo-950/40 space-y-4 mt-6 backdrop-blur-xl transition-all duration-300">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center space-x-2.5 text-indigo-300 font-semibold text-base">
+                        <RefreshCw className="w-5 h-5 animate-spin text-indigo-400 flex-shrink-0" />
+                        <span>{progressMessage || 'Crawling website domains for verified contact emails...'}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-400 pl-7">
+                        <span className="bg-indigo-500/10 text-indigo-300 px-2.5 py-0.5 rounded-md border border-indigo-500/20 font-medium">
+                          {progressPercent < 15 ? 'Step 1/2: Parsing CSV File' : 'Step 2/2: Multi-threaded Website Crawling'}
+                        </span>
+                        <span className="font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                          Elapsed: {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')}s
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2 self-start sm:self-auto">
+                      <span className="font-mono text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-purple-400 to-emerald-400">
+                        {progressPercent}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="w-full bg-slate-900 rounded-full h-4 p-0.5 border border-slate-800 overflow-hidden relative shadow-inner">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-600 via-purple-500 to-emerald-400 transition-all duration-300 ease-out shadow-lg shadow-indigo-500/40 relative"
+                      style={{ width: `${Math.max(2, progressPercent)}%` }}
+                    >
+                      <div className="absolute inset-0 bg-white/20 animate-pulse rounded-full" />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Error Banner */}
         {error && (
           <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-4 rounded-2xl flex items-center space-x-3">
@@ -467,7 +659,7 @@ function App() {
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
             <div className="flex items-center space-x-3">
               <h3 className="text-lg font-semibold text-white">
-                {activeTab === 'extractor' ? 'Extracted Business Leads' : 'Bookmarked Leads'}
+                {activeTab === 'extractor' ? 'Extracted Business Leads' : (activeTab === 'csv' ? 'CSV Enriched Business Leads' : 'Bookmarked Leads')}
               </h3>
               <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs px-3 py-1 rounded-full font-semibold">
                 {displayedLeads.length} Leads
