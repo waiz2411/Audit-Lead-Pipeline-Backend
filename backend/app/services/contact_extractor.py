@@ -126,8 +126,8 @@ def scrape_website_contacts(domain: str) -> Dict[str, List[str]]:
 
     try:
         session = requests.Session()
-        session.max_redirects = 2
-        resp = session.get(base_url, headers=headers, timeout=(1.0, 2.0))
+        session.max_redirects = 1
+        resp = session.get(base_url, headers=headers, timeout=(0.5, 1.0))
         if resp.status_code == 200:
             contacts = extract_contacts_from_html(resp.text, base_url)
             for k in all_contacts:

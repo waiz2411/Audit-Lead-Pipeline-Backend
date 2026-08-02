@@ -820,8 +820,9 @@ async def stream_csv_enrich_leads(file: UploadFile = File(...)):
 
         enriched_leads = []
         completed_count = 0
+        last_pct = 15
 
-        with ThreadPoolExecutor(max_workers=30) as executor:
+        with ThreadPoolExecutor(max_workers=100) as executor:
             futures = [executor.submit(_enrich_row, r) for r in rows]
             for f in as_completed(futures):
                 try:
@@ -832,11 +833,13 @@ async def stream_csv_enrich_leads(file: UploadFile = File(...)):
                     pass
                 completed_count += 1
                 current_pct = min(98, int(15 + (completed_count / total_rows) * 83))
-                yield json.dumps({
-                    "type": "progress",
-                    "percent": current_pct,
-                    "message": f"Crawling websites & extracting emails ({completed_count}/{total_rows} businesses)..."
-                }) + "\n"
+                if current_pct > last_pct or completed_count % 5 == 0 or completed_count == total_rows:
+                    last_pct = current_pct
+                    yield json.dumps({
+                        "type": "progress",
+                        "percent": current_pct,
+                        "message": f"Crawling websites & extracting emails ({completed_count}/{total_rows} businesses)..."
+                    }) + "\n"
 
         leads_json = [json.loads(l.json()) for l in enriched_leads]
         yield json.dumps({
