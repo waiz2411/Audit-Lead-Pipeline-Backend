@@ -417,7 +417,7 @@ def trigger_outreach_email(result_id: int, payload: OutreachRequest, db: Session
         raise HTTPException(status_code=500, detail=f"Failed to send email: {error_msg}")
 
 # --- Keyword Lead Finder & Outdated Design Scraper API ---
-from typing import List
+from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .schemas import KeywordSearchRequest, SearchLeadResultSchema
 from .services.search_service import search_duckduckgo
@@ -686,7 +686,7 @@ def stream_gmaps_leads(payload: GMapsSearchRequest):
                     "message": f"Scraped emails and verified phone numbers ({completed_count}/{total_raw} businesses)..."
                 }) + "\n"
 
-        leads_json = [json.loads(l.json()) for l in enriched_leads]
+        leads_json = [l.dict() if hasattr(l, 'dict') else l.model_dump() for l in enriched_leads]
         yield json.dumps({
             "type": "complete",
             "percent": 100,
