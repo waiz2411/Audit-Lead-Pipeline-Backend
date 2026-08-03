@@ -265,11 +265,16 @@ export default function PoorLeadsPage({ API_BASE, showToast, bookmarkedLeads, se
               onChange={(e) => setMaxResults(e.target.value)}
               className="w-full bg-slate-950 border border-slate-700 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl px-4 py-3 text-sm text-white transition-all font-medium"
             >
-              <option value="5">5 Leads</option>
+              <option value="5">5 Leads (Quick)</option>
               <option value="10">10 Leads</option>
-              <option value="15">15 Leads</option>
-              <option value="20">20 Leads</option>
+              <option value="15">15 Leads (Recommended)</option>
               <option value="30">30 Leads</option>
+              <option value="50">50 Leads</option>
+              <option value="100">100 Leads</option>
+              <option value="250">250 Leads</option>
+              <option value="500">500 Leads</option>
+              <option value="1000">1,000 Bulk Leads</option>
+              <option value="5000">5,000 Mega Extraction</option>
             </select>
           </div>
 
