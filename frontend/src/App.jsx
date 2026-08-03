@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import {
   MapPin, Search, Phone, Mail, Globe, Star, FileSpreadsheet, FileJson, Copy,
   Check, ExternalLink, Filter, Sparkles, RefreshCw, Bookmark, Share2, Layers,
-  MessageCircle, AlertCircle, ShieldCheck, Download, UploadCloud, FileText
+  MessageCircle, AlertCircle, ShieldCheck, Download, UploadCloud, FileText, Flame
 } from 'lucide-react';
+import PoorLeadsPage from './PoorLeadsPage';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
   typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
@@ -62,7 +63,7 @@ function App() {
     }
   });
 
-  const [activeTab, setActiveTab] = useState('extractor'); // 'extractor' | 'saved'
+  const [activeTab, setActiveTab] = useState('poor_leads'); // 'poor_leads' | 'extractor' | 'csv' | 'saved'
 
   useEffect(() => {
     localStorage.setItem('gmaps_bookmarked_leads', JSON.stringify(bookmarkedLeads));
@@ -430,6 +431,17 @@ function App() {
         {/* Tab Navigation */}
         <div className="flex items-center space-x-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
           <button
+            onClick={() => setActiveTab('poor_leads')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
+              activeTab === 'poor_leads'
+                ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Flame className="w-4 h-4 text-amber-400" />
+            <span>🔥 Poor Website Leads</span>
+          </button>
+          <button
             onClick={() => setActiveTab('extractor')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
               activeTab === 'extractor'
@@ -468,6 +480,16 @@ function App() {
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
         
+        {/* Poor Website Leads Page */}
+        {activeTab === 'poor_leads' && (
+          <PoorLeadsPage
+            API_BASE={API_BASE}
+            showToast={showToast}
+            bookmarkedLeads={bookmarkedLeads}
+            setBookmarkedLeads={setBookmarkedLeads}
+          />
+        )}
+
         {/* Extractor Search Box */}
         {activeTab === 'extractor' && (
           <div className="bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">

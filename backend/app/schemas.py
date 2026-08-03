@@ -134,3 +134,33 @@ class GMapsSearchRequest(BaseModel):
 class SaveLeadsJobRequest(BaseModel):
     job_name: str
     leads: List[GMapsLeadSchema]
+
+class PoorLeadSearchRequest(BaseModel):
+    niche: str
+    location: Optional[str] = ""
+    max_results: int = 15
+    min_score: int = 0
+
+class PoorLeadSchema(BaseModel):
+    name: str
+    niche: Optional[str] = ""
+    location: Optional[str] = ""
+    phone: Optional[str] = ""
+    email: Optional[str] = ""
+    url: str
+    lead_score: int
+    lead_badge: str
+    lead_level: str
+    total_points: int
+    load_time_sec: Optional[float] = 0.0
+    design_score: Optional[int] = 50
+    problems: List[str]
+    recommended_services: List[str]
+    outreach_hook: str
+    failed_checks_count: int
+    check_details: Optional[Dict[str, Any]] = None
+    google_maps_url: Optional[str] = ""
+    rating: Optional[float] = 4.5
+    reviews_count: Optional[int] = 15
+    address: Optional[str] = ""
+

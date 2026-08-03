@@ -19,7 +19,8 @@ from urllib.parse import urlparse
 
 from .database import engine, Base, get_db
 from .models import Job, AuditResult, Settings
-from .schemas import JobSchema, JobDetailSchema, AuditResultSchema, SettingsSchema, ManualJobRequest, ContactUpdateRequest, OutreachRequest
+from .schemas import JobSchema, JobDetailSchema, AuditResultSchema, SettingsSchema, ManualJobRequest, ContactUpdateRequest, OutreachRequest, PoorLeadSearchRequest, PoorLeadSchema
+from .auditor.poor_website_auditor import audit_poor_website
 from .worker import worker_manager_loop, close_browser
 from .email_service import send_smtp_email, render_template
 
@@ -800,6 +801,158 @@ def export_gmaps_leads_csv(leads: List[GMapsLeadSchema]):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=google_maps_leads.csv"}
     )
+
+
+@app.post("/api/v1/stream-poor-website-leads")
+def stream_poor_website_leads(payload: PoorLeadSearchRequest):
+    """
+    Stream real-time discovery, 40-point website auditing, lead scoring, and hook generation.
+    """
+    from .services.gmaps_scraper import get_google_maps_leads, scrape_website_contacts
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def event_generator():
+        prog_queue = queue.Queue()
+
+        def _on_progress(pct: int, msg: str):
+            prog_queue.put((pct, msg))
+
+        raw_leads_container = []
+        scrape_done = threading.Event()
+
+        def _do_scrape():
+            try:
+                res = get_google_maps_leads(
+                    payload.niche,
+                    payload.location or "",
+                    max_results=payload.max_results,
+                    progress_callback=_on_progress
+                )
+                raw_leads_container.extend(res)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Error scraping leads for poor website qualifier: {e}")
+            finally:
+                scrape_done.set()
+
+        thread = threading.Thread(target=_do_scrape)
+        thread.start()
+
+        yield json.dumps({"type": "progress", "percent": 5, "message": f"Searching Google Maps for {payload.niche} businesses in {payload.location or 'all areas'}..."}) + "\n"
+
+        while not scrape_done.is_set() or not prog_queue.empty():
+            try:
+                pct, msg = prog_queue.get(timeout=0.15)
+                yield json.dumps({"type": "progress", "percent": pct, "message": msg}) + "\n"
+            except queue.Empty:
+                pass
+
+        thread.join()
+        raw_leads = raw_leads_container
+        total_raw = len(raw_leads)
+
+        if total_raw == 0:
+            yield json.dumps({"type": "complete", "percent": 100, "message": "No business listings found for search criteria.", "leads": []}) + "\n"
+            return
+
+        yield json.dumps({"type": "progress", "percent": 45, "message": f"Found {total_raw} businesses. Evaluating websites against 40 technical & design criteria..."}) + "\n"
+
+        qualified_leads = []
+        completed_count = 0
+
+        def _audit_lead(lead_dict: dict) -> dict:
+            name = str(lead_dict.get('name') or 'Local Business')
+            website = str(lead_dict.get('website') or '')
+            phone = str(lead_dict.get('phone') or '')
+            address = str(lead_dict.get('address') or payload.location or '')
+            rating = lead_dict.get('rating', 4.5)
+            reviews_count = lead_dict.get('reviews_count', 15)
+            gmaps_url = lead_dict.get('google_maps_url', '')
+
+            # Extract email if possible
+            email = str(lead_dict.get('email') or '')
+            if not email and website and website.startswith('http'):
+                try:
+                    parsed = urlparse(website)
+                    domain = parsed.netloc.lower().replace('www.', '')
+                    if domain:
+                        scraped = scrape_website_contacts(domain)
+                        if isinstance(scraped, dict) and scraped.get('emails'):
+                            email = scraped['emails'][0]
+                        if not email:
+                            email = f"info@{domain}"
+                except Exception:
+                    pass
+
+            audit_res = audit_poor_website(
+                url=website,
+                name=name,
+                niche=payload.niche,
+                location=payload.location or "",
+                phone=phone,
+                email=email
+            )
+
+            audit_res['niche'] = payload.niche
+            audit_res['location'] = payload.location or ""
+            audit_res['rating'] = rating
+            audit_res['reviews_count'] = reviews_count
+            audit_res['address'] = address
+            audit_res['google_maps_url'] = gmaps_url
+            return audit_res
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(_audit_lead, l) for l in raw_leads]
+            for f in as_completed(futures):
+                try:
+                    res = f.result()
+                    if res and res['lead_score'] >= payload.min_score:
+                        qualified_leads.append(res)
+                except Exception as ex:
+                    import logging
+                    logging.getLogger(__name__).error(f"Error auditing lead: {ex}")
+                completed_count += 1
+                current_pct = min(98, int(45 + (completed_count / max(1, total_raw)) * 53))
+                yield json.dumps({
+                    "type": "progress",
+                    "percent": current_pct,
+                    "message": f"Audited {completed_count}/{total_raw} websites against 40 failure criteria..."
+                }) + "\n"
+
+        # Sort leads by highest lead score (hottest leads first)
+        qualified_leads.sort(key=lambda x: x['lead_score'], reverse=True)
+
+        yield json.dumps({
+            "type": "complete",
+            "percent": 100,
+            "message": f"Successfully evaluated {len(qualified_leads)} qualified leads with website issue reports!",
+            "leads": qualified_leads
+        }) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@app.post("/api/v1/poor-website-leads/export-csv")
+def export_poor_leads_csv(leads: List[PoorLeadSchema]):
+    import csv
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Business Name", "Niche", "Location", "Lead Score", "Badge", "Phone",
+        "Email", "Website URL", "Detected Problems", "Recommended Services", "Personalized Outreach Hook"
+    ])
+    for l in leads:
+        writer.writerow([
+            l.name, l.niche, l.location, l.lead_score, l.lead_badge, l.phone,
+            l.email, l.url, " | ".join(l.problems), " | ".join(l.recommended_services), l.outreach_hook
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=poor_website_leads.csv"}
+    )
+
 
 
 

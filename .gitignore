@@ -19,6 +19,6 @@ venv/
 backend/static/screenshots/
 backend/static/screenshots/*
 
-# OS metadata
-.DS_Store
-Thumbs.db
+# Scratch scripts
+scratch/
+*.csv
