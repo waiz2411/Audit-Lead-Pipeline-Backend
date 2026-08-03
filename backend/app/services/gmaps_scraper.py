@@ -17,14 +17,42 @@ EXCLUDED_DOMAINS = {
     'bbb.org', 'houzz.com', 'mapquest.com', 'manta.com'
 }
 
-TOP_CANADIAN_CITIES = [
-    "Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa",
-    "Edmonton", "Winnipeg", "Quebec City", "Hamilton", "Kitchener", "Victoria", "Halifax"
+TOP_US_CITIES = [
+    "New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia",
+    "San Antonio", "San Diego", "Dallas", "Austin", "San Jose", "Fort Worth",
+    "Jacksonville", "Columbus", "Charlotte", "Indianapolis", "San Francisco",
+    "Seattle", "Denver", "Oklahoma City", "Nashville", "El Paso", "Washington DC",
+    "Las Vegas", "Boston", "Portland", "Louisville", "Memphis", "Detroit",
+    "Baltimore", "Milwaukee", "Albuquerque", "Fresno", "Tucson", "Sacramento",
+    "Mesa", "Kansas City", "Atlanta", "Omaha", "Colorado Springs", "Raleigh",
+    "Virginia Beach", "Long Beach", "Miami", "Oakland", "Minneapolis", "Tulsa",
+    "Bakersfield", "Tampa", "Wichita", "Arlington", "Aurora", "New Orleans",
+    "Cleveland", "Anaheim", "Honolulu", "Henderson", "Stockton", "Riverside",
+    "Lexington", "Corpus Christi", "Orlando", "Irvine", "Cincinnati", "Greensboro",
+    "Pittsburgh", "St. Louis", "Lincoln", "Plano", "Newark", "Anchorage",
+    "Durham", "Chula Vista", "Fort Wayne", "Jersey City", "St. Petersburg", "Toledo",
+    "Chandler", "Laredo", "Madison", "Scottsdale", "Lubbock", "Reno", "Gilbert",
+    "Buffalo", "Glendale", "North Las Vegas", "Winston-Salem", "Chesapeake",
+    "Norfolk", "Fremont", "Garland", "Irving", "Hialeah", "Richmond", "Boise",
+    "Spokane", "Baton Rouge", "Des Moines", "Tacoma", "San Bernardino", "Modesto",
+    "Fontana", "Santa Clarita", "Montgomery", "Fayetteville", "Rochester", "Shreveport",
+    "Akron", "Little Rock", "Augusta", "Amarillo", "Mobile", "Grand Rapids", "Salt Lake City"
 ]
 
-TOP_US_CITIES = [
-    "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
-    "Philadelphia", "San Antonio", "San Diego", "Dallas", "Austin", "Miami", "Seattle"
+TOP_CANADIAN_CITIES = [
+    "Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa", "Edmonton", "Winnipeg",
+    "Quebec City", "Hamilton", "Kitchener", "Victoria", "Halifax", "Oshawa", "Windsor",
+    "Saskatoon", "Regina", "Barrie", "St. Catharines", "Kelowna", "Abbotsford",
+    "Sherbrooke", "Kingston", "Guelph", "Moncton", "Brantford", "Thunder Bay"
+]
+
+TOP_UK_CITIES = [
+    "London", "Birmingham", "Manchester", "Glasgow", "Leeds", "Liverpool",
+    "Newcastle", "Sheffield", "Bristol", "Belfast", "Edinburgh", "Cardiff", "Nottingham"
+]
+
+TOP_AUSTRALIA_CITIES = [
+    "Sydney", "Melbourne", "Brisbane", "Perth", "Adelaide", "Gold Coast", "Canberra"
 ]
 
 def extract_all_payloads(obj: Any) -> List[Any]:
@@ -50,11 +78,10 @@ def extract_all_payloads(obj: Any) -> List[Any]:
 
 def extract_phone_from_node(node: Any) -> str:
     """
-    Recursively finds valid phone numbers (+1..., +92..., 03..., 021..., (416)...) inside a place node while ignoring floats, coordinates, and RPC tokens.
+    Recursively finds valid phone numbers inside a place node.
     """
     if isinstance(node, str):
         val = node.strip()
-        # Reject strings with letters, commas, or decimal floats
         if not re.search(r'[a-zA-Z,]', val) and not re.match(r'^-?\d+\.\d+$', val):
             digits = re.sub(r'\D', '', val)
             if 7 <= len(digits) <= 15:
@@ -166,34 +193,72 @@ def parse_gmaps_app_state(app_state: Any, keyword: str, location: str, max_resul
 
 def generate_sub_queries(keyword: str, location: str, target_count: int) -> List[str]:
     loc_clean = location.strip().lower() if location else ""
+    kw_clean = keyword.strip()
     queries = []
     
-    primary = f"{keyword.strip()} in {location.strip()}" if location and location.strip() else keyword.strip()
+    primary = f"{kw_clean} in {location.strip()}" if location and location.strip() else kw_clean
     queries.append(primary)
 
-    if target_count <= 20:
+    if target_count <= 15:
         return queries
 
-    if any(c in loc_clean for c in ["canada", "cananada", "ca"]):
-        for city in TOP_CANADIAN_CITIES:
-            queries.append(f"{keyword.strip()} in {city} Canada")
-    elif any(c in loc_clean for c in ["usa", "us", "united states"]):
+    variations = [
+        f"best {kw_clean} in {location.strip()}" if location else f"best {kw_clean}",
+        f"top {kw_clean} company in {location.strip()}" if location else f"top {kw_clean} company",
+        f"{kw_clean} services near {location.strip()}" if location else f"{kw_clean} services",
+        f"emergency {kw_clean} in {location.strip()}" if location else f"emergency {kw_clean}",
+        f"commercial {kw_clean} in {location.strip()}" if location else f"commercial {kw_clean}",
+        f"residential {kw_clean} in {location.strip()}" if location else f"residential {kw_clean}",
+        f"24/7 {kw_clean} in {location.strip()}" if location else f"24/7 {kw_clean}",
+        f"{kw_clean} repair {location.strip()}" if location else f"{kw_clean} repair",
+        f"{kw_clean} installation {location.strip()}" if location else f"{kw_clean} installation",
+        f"licensed {kw_clean} in {location.strip()}" if location else f"licensed {kw_clean}",
+        f"affordable {kw_clean} {location.strip()}" if location else f"affordable {kw_clean}"
+    ]
+
+    for v in variations:
+        if v not in queries:
+            queries.append(v)
+
+    # If location is nationwide, country, broad or missing, loop across top major cities
+    if not loc_clean or any(c in loc_clean for c in ["usa", "us", "united states", "america"]):
         for city in TOP_US_CITIES:
-            queries.append(f"{keyword.strip()} in {city}")
+            q_city = f"{kw_clean} in {city}"
+            if q_city not in queries:
+                queries.append(q_city)
+            if target_count >= 1000:
+                queries.append(f"best {kw_clean} in {city}")
+    elif any(c in loc_clean for c in ["canada", "ca"]):
+        for city in TOP_CANADIAN_CITIES:
+            q_city = f"{kw_clean} in {city} Canada"
+            if q_city not in queries:
+                queries.append(q_city)
+            if target_count >= 1000:
+                queries.append(f"best {kw_clean} in {city}")
+    elif any(c in loc_clean for c in ["uk", "united kingdom", "england", "britain"]):
+        for city in TOP_UK_CITIES:
+            q_city = f"{kw_clean} in {city} UK"
+            if q_city not in queries:
+                queries.append(q_city)
+    elif any(c in loc_clean for c in ["australia", "au"]):
+        for city in TOP_AUSTRALIA_CITIES:
+            q_city = f"{kw_clean} in {city} Australia"
+            if q_city not in queries:
+                queries.append(q_city)
     else:
-        queries.extend([
-            f"best {keyword.strip()} in {location.strip()}",
-            f"{keyword.strip()} company in {location.strip()}",
-            f"{keyword.strip()} services in {location.strip()}",
-            f"top {keyword.strip()} agency in {location.strip()}"
-        ])
+        # If target count is large (>= 100), also append US nationwide cities to fulfill huge count requirement
+        if target_count >= 100:
+            for city in TOP_US_CITIES:
+                q_city = f"{kw_clean} in {city}"
+                if q_city not in queries:
+                    queries.append(q_city)
 
     return queries
 
 def scrape_real_google_maps(keyword: str, location: str = "", max_results: int = 15, progress_callback=None) -> List[Dict[str, Any]]:
     """
     Extract 100% REAL Google Maps business listings using Playwright Headless Chromium.
-    Ultra-fast response with resource routing and multi-query feed scrolling.
+    Enhanced to support HUGE lead extraction (hundreds to thousands of leads).
     """
     queries = generate_sub_queries(keyword, location, max_results)
     
@@ -201,7 +266,7 @@ def scrape_real_google_maps(keyword: str, location: str = "", max_results: int =
     seen_names = set()
 
     if progress_callback:
-        progress_callback(5, "Launching Playwright Google Maps browser...")
+        progress_callback(5, "Launching Playwright Google Maps browser engine...")
 
     try:
         with sync_playwright() as p:
@@ -220,9 +285,8 @@ def scrape_real_google_maps(keyword: str, location: str = "", max_results: int =
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 locale='en-US'
             )
-            page = context.new_page()
 
-            # Abort heavy resources (images, fonts, media, analytics) for lightning speed
+            # Route aborting for super speed
             def block_resources(route):
                 req = route.request
                 if req.resource_type in ["image", "media", "font"]:
@@ -232,22 +296,23 @@ def scrape_real_google_maps(keyword: str, location: str = "", max_results: int =
                 else:
                     route.continue_()
 
-            page.route("**/*", block_resources)
+            context.route("**/*", block_resources)
+            page = context.new_page()
 
             for idx, q in enumerate(queries):
                 if len(leads) >= max_results:
                     break
 
                 if progress_callback:
-                    calc_pct = min(40, 10 + int((idx / max(1, len(queries))) * 20))
-                    progress_callback(calc_pct, f"Searching Google Maps for '{q}'...")
+                    calc_pct = min(44, 10 + int((len(leads) / max_results) * 32))
+                    progress_callback(calc_pct, f"Extracted {len(leads)}/{max_results} leads. Searching Google Maps for '{q}'...")
 
                 encoded_query = quote(q)
                 maps_url = f"https://www.google.com/maps/search/{encoded_query}?hl=en"
 
                 try:
                     page.goto(maps_url, wait_until='domcontentloaded', timeout=10000)
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(1000)
 
                     # Extract full place state from window.APP_INITIALIZATION_STATE
                     app_state = page.evaluate('() => window.APP_INITIALIZATION_STATE')
@@ -260,16 +325,23 @@ def scrape_real_google_maps(keyword: str, location: str = "", max_results: int =
                                 leads.append(l)
                                 if len(leads) >= max_results:
                                     break
-                        logger.info(f"State extraction retrieved {len(q_leads)} leads for query '{q}'")
-                        if progress_callback:
-                            calc_pct = min(42, 15 + int((len(leads) / max_results) * 25))
-                            progress_callback(calc_pct, f"Extracted {len(leads)} business listings from Google Maps...")
+                        logger.info(f"State extraction retrieved {len(q_leads)} leads for query '{q}' (Total: {len(leads)})")
 
-                    # DOM Feed Scroll Fallback if state returned fewer items
+                    # Deep scroll Google Maps feed container to load dynamic AJAX place cards
                     scroll_attempts = 0
-                    while len(leads) < max_results and scroll_attempts < 6:
+                    max_scrolls = 6 if max_results > 50 else 3
+                    while len(leads) < max_results and scroll_attempts < max_scrolls:
+                        feed = page.locator('div[role="feed"]').first
+                        if feed.count() > 0:
+                            feed.evaluate('el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll", {bubbles:true})); }')
+                        else:
+                            page.mouse.wheel(0, 3000)
+
+                        page.wait_for_timeout(700)
+                        scroll_attempts += 1
+
                         title_elems = page.query_selector_all('div.qBF1Pd')
-                        new_found = 0
+                        new_in_scroll = 0
 
                         for elem in title_elems:
                             try:
@@ -320,26 +392,18 @@ def scrape_real_google_maps(keyword: str, location: str = "", max_results: int =
                                     'address': address,
                                     'google_maps_url': f"https://www.google.com/maps/search/{quote(name + ' ' + (location or ''))}"
                                 })
-                                new_found += 1
-                                if progress_callback:
-                                    calc_pct = min(42, 15 + int((len(leads) / max_results) * 25))
-                                    progress_callback(calc_pct, f"Found {len(leads)} business listings on Google Maps...")
+                                new_in_scroll += 1
+                                if progress_callback and len(leads) % 5 == 0:
+                                    calc_pct = min(44, 10 + int((len(leads) / max_results) * 32))
+                                    progress_callback(calc_pct, f"Harvested {len(leads)}/{max_results} real Google Maps business listings...")
+
                                 if len(leads) >= max_results:
                                     break
                             except Exception as ex:
                                 logger.debug(f"Error parsing GMaps card: {ex}")
 
-                        if len(leads) >= max_results or new_found == 0:
+                        if len(leads) >= max_results or new_in_scroll == 0:
                             break
-
-                        feed = page.locator('div[role="feed"]').first
-                        if feed.count() > 0:
-                            feed.evaluate('el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event("scroll", {bubbles:true})); }')
-                        else:
-                            page.mouse.wheel(0, 3000)
-
-                        page.wait_for_timeout(600)
-                        scroll_attempts += 1
 
                 except Exception as ex:
                     logger.error(f"Error processing query '{q}': {ex}")
@@ -357,4 +421,3 @@ def get_google_maps_leads(keyword: str, location: str = "", max_results: int = 1
     logger.info(f"Extracting 100% REAL Google Maps leads for '{keyword}', '{location}' (max: {max_results})")
     leads = scrape_real_google_maps(keyword, location, max_results, progress_callback=progress_callback)
     return leads[:max_results]
-
