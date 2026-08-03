@@ -808,7 +808,8 @@ def stream_poor_website_leads(payload: PoorLeadSearchRequest):
     """
     Stream real-time discovery, 40-point website auditing, lead scoring, and hook generation.
     """
-    from .services.gmaps_scraper import get_google_maps_leads, scrape_website_contacts
+    from .services.gmaps_scraper import get_google_maps_leads
+    from .services.contact_extractor import scrape_website_contacts
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def event_generator():
