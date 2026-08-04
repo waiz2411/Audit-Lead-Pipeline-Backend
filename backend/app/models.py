@@ -70,3 +70,25 @@ class Settings(Base):
     # Email Template
     email_template_subject = Column(String, default='Website Audit Report for {domain}')
     email_template_body = Column(Text, default='Hi there,\n\nWe audited your website {domain} and found some performance and SEO issues. Your overall score is {score_overall}/100.\n\nBest regards,\nAudit Team')
+
+class Niche(Base):
+    __tablename__ = 'niches'
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, unique=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    targets = relationship('NicheTarget', back_populates='niche', cascade='all, delete-orphan')
+
+class NicheTarget(Base):
+    __tablename__ = 'niche_targets'
+    id = Column(Integer, primary_key=True, index=True)
+    niche_id = Column(Integer, ForeignKey('niches.id'), index=True)
+    state_code = Column(String, index=True) # e.g. CA, TX, FL
+    state_name = Column(String, index=True) # e.g. California
+    city_name = Column(String, index=True) # e.g. Los Angeles
+    status = Column(String, default='targeted') # targeted, outreached, skipped
+    notes = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    
+    niche = relationship('Niche', back_populates='targets')
+

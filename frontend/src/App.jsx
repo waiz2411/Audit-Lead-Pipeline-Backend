@@ -5,6 +5,7 @@ import {
   MessageCircle, AlertCircle, ShieldCheck, Download, UploadCloud, FileText, Flame
 } from 'lucide-react';
 import PoorLeadsPage from './PoorLeadsPage';
+import LeadManagerPage from './LeadManagerPage';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
   typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
@@ -85,6 +86,13 @@ function App() {
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 2500);
+  };
+
+  const handleExtractFromTarget = (nicheName, locName) => {
+    setKeyword(nicheName);
+    setLocation(locName);
+    setActiveTab('extractor');
+    showToast(`Pre-filled extractor for ${nicheName} in ${locName}!`);
   };
 
   const handleExtractLeads = async (e) => {
@@ -431,6 +439,17 @@ function App() {
         {/* Tab Navigation */}
         <div className="flex items-center space-x-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
           <button
+            onClick={() => setActiveTab('lead_manager')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
+              activeTab === 'lead_manager'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Layers className="w-4 h-4 text-indigo-400" />
+            <span>🎯 Lead Manager</span>
+          </button>
+          <button
             onClick={() => setActiveTab('poor_leads')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
               activeTab === 'poor_leads'
@@ -480,6 +499,14 @@ function App() {
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
         
+        {/* Lead Manager Page */}
+        {activeTab === 'lead_manager' && (
+          <LeadManagerPage
+            onExtractFromTarget={handleExtractFromTarget}
+            showToast={showToast}
+          />
+        )}
+
         {/* Poor Website Leads Page */}
         {activeTab === 'poor_leads' && (
           <PoorLeadsPage

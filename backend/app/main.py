@@ -18,8 +18,12 @@ import threading
 from urllib.parse import urlparse
 
 from .database import engine, Base, get_db
-from .models import Job, AuditResult, Settings
-from .schemas import JobSchema, JobDetailSchema, AuditResultSchema, SettingsSchema, ManualJobRequest, ContactUpdateRequest, OutreachRequest, PoorLeadSearchRequest, PoorLeadSchema
+from .models import Job, AuditResult, Settings, Niche, NicheTarget
+from .schemas import (
+    JobSchema, JobDetailSchema, AuditResultSchema, SettingsSchema, ManualJobRequest,
+    ContactUpdateRequest, OutreachRequest, PoorLeadSearchRequest, PoorLeadSchema,
+    NicheCreate, NicheTargetSchema, NicheResponse, TargetToggleRequest, BulkStateToggleRequest
+)
 from .auditor.poor_website_auditor import audit_poor_website
 from .worker import worker_manager_loop, close_browser
 from .email_service import send_smtp_email, render_template
@@ -955,6 +959,131 @@ def export_poor_leads_csv(leads: List[PoorLeadSchema]):
     )
 
 
+# ---------------------------------------------------------------------------
+# Niches & USA Outreach Management API Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/niches", response_model=List[NicheResponse])
+def get_niches(db: Session = Depends(get_db)):
+    niches = db.query(Niche).order_by(Niche.created_at.desc()).all()
+    results = []
+    for n in niches:
+        targeted_count = db.query(NicheTarget).filter(NicheTarget.niche_id == n.id, NicheTarget.status == 'targeted').count()
+        outreached_count = db.query(NicheTarget).filter(NicheTarget.niche_id == n.id, NicheTarget.status == 'outreached').count()
+        results.append(NicheResponse(
+            id=n.id,
+            name=n.name,
+            description=n.description or '',
+            created_at=n.created_at,
+            targeted_count=targeted_count,
+            outreached_count=outreached_count
+        ))
+    return results
+
+@app.post("/api/v1/niches", response_model=NicheResponse)
+def create_niche(niche_in: NicheCreate, db: Session = Depends(get_db)):
+    clean_name = niche_in.name.strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Niche name cannot be empty")
+    
+    existing = db.query(Niche).filter(Niche.name.ilike(clean_name)).first()
+    if existing:
+        return NicheResponse(
+            id=existing.id,
+            name=existing.name,
+            description=existing.description or '',
+            created_at=existing.created_at,
+            targeted_count=db.query(NicheTarget).filter(NicheTarget.niche_id == existing.id, NicheTarget.status == 'targeted').count(),
+            outreached_count=db.query(NicheTarget).filter(NicheTarget.niche_id == existing.id, NicheTarget.status == 'outreached').count()
+        )
+    
+    niche = Niche(name=clean_name, description=niche_in.description)
+    db.add(niche)
+    db.commit()
+    db.refresh(niche)
+    return NicheResponse(
+        id=niche.id,
+        name=niche.name,
+        description=niche.description or '',
+        created_at=niche.created_at,
+        targeted_count=0,
+        outreached_count=0
+    )
+
+@app.delete("/api/v1/niches/{niche_id}")
+def delete_niche(niche_id: int, db: Session = Depends(get_db)):
+    niche = db.query(Niche).filter(Niche.id == niche_id).first()
+    if not niche:
+        raise HTTPException(status_code=404, detail="Niche not found")
+    db.delete(niche)
+    db.commit()
+    return {"message": "Niche deleted successfully", "id": niche_id}
+
+@app.get("/api/v1/niches/{niche_id}/targets", response_model=List[NicheTargetSchema])
+def get_niche_targets(niche_id: int, db: Session = Depends(get_db)):
+    targets = db.query(NicheTarget).filter(NicheTarget.niche_id == niche_id).all()
+    return targets
+
+@app.post("/api/v1/niches/{niche_id}/targets/toggle")
+def toggle_niche_target(niche_id: int, req: TargetToggleRequest, db: Session = Depends(get_db)):
+    target = db.query(NicheTarget).filter(
+        NicheTarget.niche_id == niche_id,
+        NicheTarget.state_code == req.state_code,
+        NicheTarget.city_name == req.city_name
+    ).first()
+    
+    if req.status == 'untargeted':
+        if target:
+            db.delete(target)
+            db.commit()
+        return {"status": "untargeted", "city": req.city_name, "state": req.state_code}
+    
+    if not target:
+        target = NicheTarget(
+            niche_id=niche_id,
+            state_code=req.state_code,
+            state_name=req.state_name,
+            city_name=req.city_name,
+            status=req.status
+        )
+        db.add(target)
+    else:
+        target.status = req.status
+    
+    db.commit()
+    return {"status": req.status, "city": req.city_name, "state": req.state_code}
+
+@app.post("/api/v1/niches/{niche_id}/targets/bulk")
+def bulk_toggle_state_targets(niche_id: int, req: BulkStateToggleRequest, db: Session = Depends(get_db)):
+    if req.status == 'untargeted':
+        db.query(NicheTarget).filter(
+            NicheTarget.niche_id == niche_id,
+            NicheTarget.state_code == req.state_code,
+            NicheTarget.city_name.in_(req.cities)
+        ).delete(synchronize_session=False)
+        db.commit()
+        return {"message": f"Removed all targets for state {req.state_code}"}
+    
+    for city in req.cities:
+        target = db.query(NicheTarget).filter(
+            NicheTarget.niche_id == niche_id,
+            NicheTarget.state_code == req.state_code,
+            NicheTarget.city_name == city
+        ).first()
+        if not target:
+            target = NicheTarget(
+                niche_id=niche_id,
+                state_code=req.state_code,
+                state_name=req.state_name,
+                city_name=city,
+                status=req.status
+            )
+            db.add(target)
+        else:
+            target.status = req.status
+            
+    db.commit()
+    return {"message": f"Updated state {req.state_code} cities status to {req.status}"}
 
 
 if os.path.exists(FRONTEND_DIR):

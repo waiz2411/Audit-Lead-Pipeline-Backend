@@ -164,3 +164,44 @@ class PoorLeadSchema(BaseModel):
     reviews_count: Optional[int] = 15
     address: Optional[str] = ""
 
+class NicheCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+class NicheTargetSchema(BaseModel):
+    id: Optional[int] = None
+    niche_id: int
+    state_code: str
+    state_name: str
+    city_name: str
+    status: str = 'targeted' # targeted, outreached, skipped
+    notes: Optional[str] = ""
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class NicheResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = ""
+    created_at: datetime
+    targeted_count: int = 0
+    outreached_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+class TargetToggleRequest(BaseModel):
+    state_code: str
+    state_name: str
+    city_name: str
+    status: str # targeted, outreached, skipped, untargeted
+
+class BulkStateToggleRequest(BaseModel):
+    state_code: str
+    state_name: str
+    cities: List[str]
+    status: str # targeted, outreached, skipped, untargeted
+
+
