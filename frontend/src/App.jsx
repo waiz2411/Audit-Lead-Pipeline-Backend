@@ -65,6 +65,12 @@ function App() {
   });
 
   const [activeTab, setActiveTab] = useState('poor_leads'); // 'poor_leads' | 'extractor' | 'csv' | 'saved'
+  const [selectedLeads, setSelectedLeads] = useState([]);
+
+  // Clear selection when tab changes
+  useEffect(() => {
+    setSelectedLeads([]);
+  }, [activeTab]);
 
   useEffect(() => {
     localStorage.setItem('gmaps_bookmarked_leads', JSON.stringify(bookmarkedLeads));
@@ -188,7 +194,14 @@ function App() {
     const headers = parseRow(lines[0]).map((h) => h.toLowerCase().replace(/['"]/g, ''));
 
     const findCol = (keywords) => {
-      return headers.find((h) => keywords.some((k) => h.includes(k)));
+      for (const keyword of keywords) {
+        const found = headers.find((h) => {
+          if (keyword === 'place' && (h === 'place_id' || h === 'placeid')) return false;
+          return h.includes(keyword);
+        });
+        if (found) return found;
+      }
+      return null;
     };
 
     const nameCol = findCol(['title', 'name', 'company', 'business', 'place']);
@@ -382,6 +395,94 @@ function App() {
       setBookmarkedLeads([...bookmarkedLeads, lead]);
       showToast('Saved to bookmarked leads list!');
     }
+  };
+
+  // Selection Helper Methods
+  const isSelected = (lead) => {
+    return selectedLeads.some(s => s.name === lead.name && s.address === lead.address);
+  };
+
+  const handleSelectToggle = (lead) => {
+    const isSel = isSelected(lead);
+    if (isSel) {
+      setSelectedLeads(selectedLeads.filter(s => !(s.name === lead.name && s.address === lead.address)));
+    } else {
+      setSelectedLeads([...selectedLeads, lead]);
+    }
+  };
+
+  const handleSelectAllToggle = () => {
+    const allSelected = displayedLeads.every(l => isSelected(l));
+    if (allSelected) {
+      setSelectedLeads(selectedLeads.filter(s => !displayedLeads.some(l => l.name === s.name && l.address === s.address)));
+    } else {
+      const toAdd = displayedLeads.filter(l => !isSelected(l));
+      setSelectedLeads([...selectedLeads, ...toAdd]);
+    }
+  };
+
+  const handleSaveSelected = () => {
+    if (selectedLeads.length === 0) return;
+    const newBookmarks = [...bookmarkedLeads];
+    let addedCount = 0;
+    selectedLeads.forEach(lead => {
+      const exists = newBookmarks.some(b => b.name === lead.name && b.address === lead.address);
+      if (!exists) {
+        newBookmarks.push(lead);
+        addedCount++;
+      }
+    });
+    setBookmarkedLeads(newBookmarks);
+    showToast(`Saved ${addedCount} new leads to bookmarks!`);
+    setSelectedLeads([]);
+  };
+
+  const handleExtractSelectedSaved = async () => {
+    if (selectedLeads.length === 0) return;
+
+    setLoading(true);
+    setError('');
+    setProgressPercent(10);
+    setProgressMessage(`Enriching contacts for ${selectedLeads.length} saved leads...`);
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/enrich-csv-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(selectedLeads)
+      });
+
+      if (resp.ok) {
+        const enrichedList = await resp.json();
+        if (Array.isArray(enrichedList) && enrichedList.length > 0) {
+          const updatedBookmarks = bookmarkedLeads.map(lead => {
+            const enriched = enrichedList.find(e => e.name === lead.name && e.address === lead.address);
+            return enriched ? { ...lead, ...enriched } : lead;
+          });
+          setBookmarkedLeads(updatedBookmarks);
+          showToast(`Successfully enriched ${enrichedList.length} leads!`);
+        } else {
+          showToast('No contact data found for the selected leads.');
+        }
+      } else {
+        const errData = await resp.json().catch(() => ({}));
+        setError(errData.detail || 'Failed to enrich selected leads.');
+      }
+    } catch (err) {
+      console.error(err);
+      setError('Failed to enrich selected leads due to a network error.');
+    } finally {
+      setLoading(false);
+      setSelectedLeads([]);
+    }
+  };
+
+  const handleRemoveSelectedSaved = () => {
+    if (selectedLeads.length === 0) return;
+    const remaining = bookmarkedLeads.filter(b => !selectedLeads.some(s => s.name === b.name && s.address === b.address));
+    setBookmarkedLeads(remaining);
+    showToast(`Removed ${selectedLeads.length} leads from saved list.`);
+    setSelectedLeads([]);
   };
 
   const currentLeadsList = (activeTab === 'extractor' || activeTab === 'csv') ? leads : bookmarkedLeads;
@@ -883,28 +984,91 @@ function App() {
               </p>
             </div>
           ) : (
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 font-semibold text-xs uppercase tracking-wider">
-                      <th className="py-4 px-6">Business Name</th>
-                      <th className="py-4 px-6">Rating & Reviews</th>
-                      <th className="py-4 px-6">Phone Number</th>
-                      <th className="py-4 px-6">Verified Email</th>
-                      <th className="py-4 px-6">Website</th>
-                      <th className="py-4 px-6">Social Links</th>
-                      <th className="py-4 px-6">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60 text-slate-200">
-                    {displayedLeads.map((lead, idx) => {
-                      const isBookmarked = bookmarkedLeads.some(b => b.name === lead.name && b.address === lead.address);
-                      return (
-                        <tr key={idx} className="hover:bg-slate-800/40 transition-colors">
-                          
-                          {/* Name & Address */}
-                          <td className="py-4 px-6 max-w-xs">
+            <div className="space-y-4 w-full">
+              {/* Selection Banner / Toolbar */}
+              {selectedLeads.length > 0 && (
+                <div className="bg-indigo-950/80 border border-indigo-500/50 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all duration-300">
+                  <div className="flex items-center space-x-3 text-indigo-200">
+                    <Check className="w-5 h-5 text-indigo-400" />
+                    <span className="font-semibold text-sm">
+                      {selectedLeads.length} of {displayedLeads.length} leads selected
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-3">
+                    {activeTab !== 'saved' ? (
+                      <button
+                        onClick={handleSaveSelected}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-xl font-semibold shadow-md shadow-indigo-600/30 flex items-center space-x-1.5 transition-all cursor-pointer"
+                      >
+                        <Bookmark className="w-4 h-4 fill-white" />
+                        <span>Save Selected</span>
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={handleExtractSelectedSaved}
+                          className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs px-4 py-2 rounded-xl font-semibold shadow-md shadow-indigo-600/30 flex items-center space-x-1.5 transition-all cursor-pointer"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          <span>Extract Selected</span>
+                        </button>
+                        <button
+                          onClick={handleRemoveSelectedSaved}
+                          className="bg-rose-600 hover:bg-rose-500 text-white text-xs px-4 py-2 rounded-xl font-semibold border border-rose-500/30 flex items-center space-x-1.5 transition-all cursor-pointer"
+                        >
+                          <Bookmark className="w-4 h-4" />
+                          <span>Remove Selected</span>
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => setSelectedLeads([])}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs px-4 py-2 rounded-xl border border-slate-700 transition-all cursor-pointer"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-sm">
+                    <thead>
+                      <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 font-semibold text-xs uppercase tracking-wider">
+                        <th className="py-4 px-6 w-12">
+                          <input
+                            type="checkbox"
+                            checked={displayedLeads.length > 0 && displayedLeads.every(l => isSelected(l))}
+                            onChange={handleSelectAllToggle}
+                            className="w-4.5 h-4.5 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                        </th>
+                        <th className="py-4 px-6">Business Name</th>
+                        <th className="py-4 px-6">Rating & Reviews</th>
+                        <th className="py-4 px-6">Phone Number</th>
+                        <th className="py-4 px-6">Verified Email</th>
+                        <th className="py-4 px-6">Website</th>
+                        <th className="py-4 px-6">Social Links</th>
+                        <th className="py-4 px-6">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                      {displayedLeads.map((lead, idx) => {
+                        const isBookmarked = bookmarkedLeads.some(b => b.name === lead.name && b.address === lead.address);
+                        return (
+                          <tr key={idx} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="py-4 px-6 w-12">
+                              <input
+                                type="checkbox"
+                                checked={isSelected(lead)}
+                                onChange={() => handleSelectToggle(lead)}
+                                className="w-4.5 h-4.5 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                              />
+                            </td>
+                            
+                            {/* Name & Address */}
+                            <td className="py-4 px-6 max-w-xs">
                             <div className="space-y-1">
                               <div className="font-bold text-white text-base flex items-center space-x-2">
                                 <span>{lead.name}</span>
@@ -1061,7 +1225,8 @@ function App() {
                 </table>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
         </div>
       </main>
