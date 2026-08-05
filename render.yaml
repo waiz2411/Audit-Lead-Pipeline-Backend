@@ -10,3 +10,18 @@ services:
     envVars:
       - key: PORT
         value: 8000
+      # Option A: Connect an external PostgreSQL database (Recommended, works on free tier)
+      # 1. Create a PostgreSQL DB on Supabase, Neon, or Render.
+      # 2. Add DATABASE_URL to your environment variables on Render (e.g. postgres://user:pass@host/db)
+      # - key: DATABASE_URL
+      #   value: postgres://...
+
+      # Option B: Use a Persistent Disk with SQLite (Requires upgrading 'plan' from free to starter)
+      # - key: DATABASE_URL
+      #   value: sqlite:////data/audit_pipeline.db
+    # To use Option B, uncomment the lines below (and change plan to starter):
+    # disk:
+    #   name: audit-pipeline-data
+    #   mountPath: /data
+    #   sizeGB: 1
+

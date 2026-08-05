@@ -44,15 +44,109 @@ export default function LeadManagerPage({ onExtractFromTarget, showToast }) {
     }
   }, [activeNicheId]);
 
+  // Save active niche name to local storage whenever activeNicheId or niches changes
+  useEffect(() => {
+    if (activeNicheId && niches.length > 0) {
+      const active = niches.find(n => n.id === activeNicheId);
+      if (active) {
+        localStorage.setItem('gmaps_active_niche_name', active.name);
+      }
+    }
+  }, [activeNicheId, niches]);
+
+  const syncLocalDataToBackend = async (localNiches) => {
+    try {
+      console.log("Restoring local niches and targets back to empty database...");
+      for (const localNiche of localNiches) {
+        const resp = await fetch(`${API_BASE}/api/v1/niches`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: localNiche.name, description: localNiche.description })
+        });
+        if (resp.ok) {
+          const created = await resp.json();
+          const targetKey = `gmaps_niche_targets_${localNiche.name}`;
+          const oldTargetKey = `gmaps_niche_targets_${localNiche.id}`;
+          const localTargets = JSON.parse(localStorage.getItem(targetKey) || localStorage.getItem(oldTargetKey) || '{}');
+          
+          const stateTargets = {};
+          Object.entries(localTargets).forEach(([key, status]) => {
+            const [stateCode, cityName] = key.split('_');
+            if (!stateTargets[stateCode]) {
+              const stateObj = USA_STATES_DATA.find(s => s.code === stateCode);
+              stateTargets[stateCode] = {
+                code: stateCode,
+                name: stateObj ? stateObj.name : stateCode,
+                citiesByStatus: {
+                  targeted: [],
+                  outreached: [],
+                  skipped: []
+                }
+              };
+            }
+            if (stateTargets[stateCode].citiesByStatus[status]) {
+              stateTargets[stateCode].citiesByStatus[status].push(cityName);
+            }
+          });
+
+          // Upload state targets in bulk
+          for (const stateCode of Object.keys(stateTargets)) {
+            const stateData = stateTargets[stateCode];
+            for (const status of ['targeted', 'outreached', 'skipped']) {
+              const cities = stateData.citiesByStatus[status];
+              if (cities && cities.length > 0) {
+                await fetch(`${API_BASE}/api/v1/niches/${created.id}/targets/bulk`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    state_code: stateCode,
+                    state_name: stateData.name,
+                    cities: cities,
+                    status: status
+                  })
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error syncing local data to backend:", err);
+    } finally {
+      // Re-fetch niches to update UI state
+      fetchNiches();
+    }
+  };
+
   const fetchNiches = async () => {
     setLoading(true);
     try {
       const resp = await fetch(`${API_BASE}/api/v1/niches`);
       if (resp.ok) {
         const data = await resp.json();
+        
+        // Check if database was wiped (empty) but client has niches in local storage
+        const localNiches = JSON.parse(localStorage.getItem('gmaps_lead_niches') || '[]');
+        if (data.length === 0 && localNiches.length > 0) {
+          await syncLocalDataToBackend(localNiches);
+          return;
+        }
+
         setNiches(data);
-        if (data.length > 0 && !activeNicheId) {
-          setActiveNicheId(data[0].id);
+        localStorage.setItem('gmaps_lead_niches', JSON.stringify(data));
+
+        // Determine active niche by matching name
+        const storedActiveName = localStorage.getItem('gmaps_active_niche_name');
+        if (data.length > 0) {
+          let foundActive = null;
+          if (storedActiveName) {
+            foundActive = data.find(n => n.name === storedActiveName);
+          }
+          if (foundActive) {
+            setActiveNicheId(foundActive.id);
+          } else if (!activeNicheId || !data.some(n => n.id === activeNicheId)) {
+            setActiveNicheId(data[0].id);
+          }
         }
       } else {
         fallbackLocalStorageNiches();
@@ -69,14 +163,20 @@ export default function LeadManagerPage({ onExtractFromTarget, showToast }) {
     try {
       const local = JSON.parse(localStorage.getItem('gmaps_lead_niches') || '[]');
       if (local.length === 0) {
-        // Initial default niche
         const defaultNiche = { id: 1, name: "Roofing Contractors", description: "Roofing & Siding Specialists", created_at: new Date().toISOString(), targeted_count: 0, outreached_count: 0 };
         setNiches([defaultNiche]);
         setActiveNicheId(1);
         localStorage.setItem('gmaps_lead_niches', JSON.stringify([defaultNiche]));
       } else {
         setNiches(local);
-        if (!activeNicheId && local.length > 0) {
+        const storedActiveName = localStorage.getItem('gmaps_active_niche_name');
+        let foundActive = null;
+        if (storedActiveName) {
+          foundActive = local.find(n => n.name === storedActiveName);
+        }
+        if (foundActive) {
+          setActiveNicheId(foundActive.id);
+        } else if (!activeNicheId && local.length > 0) {
           setActiveNicheId(local[0].id);
         }
       }
@@ -87,6 +187,7 @@ export default function LeadManagerPage({ onExtractFromTarget, showToast }) {
 
   const fetchNicheTargets = async (nicheId) => {
     setTargetsLoading(true);
+    const active = niches.find(n => n.id === nicheId);
     try {
       const resp = await fetch(`${API_BASE}/api/v1/niches/${nicheId}/targets`);
       if (resp.ok) {
@@ -96,31 +197,36 @@ export default function LeadManagerPage({ onExtractFromTarget, showToast }) {
           map[`${t.state_code}_${t.city_name}`] = t.status;
         });
         setTargets(map);
+        saveLocalTargets(nicheId, active?.name, map);
       } else {
-        fallbackLocalStorageTargets(nicheId);
+        fallbackLocalStorageTargets(nicheId, active?.name);
       }
     } catch (e) {
-      fallbackLocalStorageTargets(nicheId);
+      fallbackLocalStorageTargets(nicheId, active?.name);
     } finally {
       setTargetsLoading(false);
     }
   };
 
-  const fallbackLocalStorageTargets = (nicheId) => {
+  const fallbackLocalStorageTargets = (nicheId, nicheName) => {
     try {
-      const key = `gmaps_niche_targets_${nicheId}`;
-      const local = JSON.parse(localStorage.getItem(key) || '{}');
+      const key = nicheName ? `gmaps_niche_targets_${nicheName}` : `gmaps_niche_targets_${nicheId}`;
+      const local = JSON.parse(localStorage.getItem(key) || localStorage.getItem(`gmaps_niche_targets_${nicheId}`) || '{}');
       setTargets(local);
     } catch (e) {
       setTargets({});
     }
   };
 
-  const saveLocalTargets = (nicheId, newTargets) => {
+  const saveLocalTargets = (nicheId, nicheName, newTargets) => {
     try {
       localStorage.setItem(`gmaps_niche_targets_${nicheId}`, JSON.stringify(newTargets));
+      if (nicheName) {
+        localStorage.setItem(`gmaps_niche_targets_${nicheName}`, JSON.stringify(newTargets));
+      }
     } catch (e) {}
   };
+
 
   // Add Niche
   const handleCreateNiche = async (nameToAdd) => {
@@ -198,7 +304,8 @@ export default function LeadManagerPage({ onExtractFromTarget, showToast }) {
     }
 
     setTargets(newTargets);
-    saveLocalTargets(activeNicheId, newTargets);
+    const active = niches.find(n => n.id === activeNicheId);
+    saveLocalTargets(activeNicheId, active?.name, newTargets);
 
     // Call API
     try {
@@ -230,7 +337,8 @@ export default function LeadManagerPage({ onExtractFromTarget, showToast }) {
     });
 
     setTargets(newTargets);
-    saveLocalTargets(activeNicheId, newTargets);
+    const active = niches.find(n => n.id === activeNicheId);
+    saveLocalTargets(activeNicheId, active?.name, newTargets);
 
     try {
       await fetch(`${API_BASE}/api/v1/niches/${activeNicheId}/targets/bulk`, {
