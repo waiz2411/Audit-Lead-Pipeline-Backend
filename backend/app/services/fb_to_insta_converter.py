@@ -3,15 +3,12 @@ import json
 import io
 import csv
 import logging
+import requests
 from typing import List, Dict, Any, Callable
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .contact_extractor import scrape_website_contacts
 
 logger = logging.getLogger(__name__)
-
-# Mobile User-Agent for Facebook mobile page contact extraction
-MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
 
 def parse_csv_bytes_to_items(csv_bytes: bytes) -> List[Dict[str, Any]]:
     """
@@ -47,7 +44,6 @@ def parse_csv_bytes_to_items(csv_bytes: bytes) -> List[Dict[str, Any]]:
     for row in reader:
         fb_url = row.get(field_map.get("fb_url", ""), "").strip() if field_map.get("fb_url") else ""
         if not fb_url:
-            # Fallback scan all values in row for facebook or instagram links
             for val in row.values():
                 if val and ("facebook.com/" in str(val) or "instagram.com/" in str(val)):
                     fb_url = str(val).strip()
@@ -85,49 +81,40 @@ def extract_page_id_or_username(url_or_text: str) -> str:
     
     url_str = str(url_or_text).strip()
     
-    # Check numeric ID query param profile.php?id=12345
     id_match = re.search(r'[?&]id=(\d+)', url_str)
     if id_match:
         return id_match.group(1)
         
-    # Check numeric ID in path /12345/ or /12345
     num_match = re.search(r'facebook\.com/(?:pages/[^/]+/)?(\d+)', url_str)
     if num_match:
         return num_match.group(1)
         
-    # Check vanity username facebook.com/username
     user_match = re.search(r'facebook\.com/([^/?#]+)', url_str)
     if user_match:
         uname = user_match.group(1)
         if uname.lower() not in ["pages", "groups", "ads", "events", "watch", "stories", "share", "sharer"]:
             return uname
 
-    # Fallback raw numeric string
     if re.match(r'^\d+$', url_str):
         return url_str
         
     return ""
 
-def lookup_meta_transparency_instagram(page_id_or_name: str) -> Dict[str, Any]:
+def lookup_meta_transparency_fast(page_id_or_name: str, session: requests.Session) -> Dict[str, Any]:
     """
-    Performs Meta Ad Library transparency lookup to discover linked Instagram handles for a Facebook Page.
+    Performs ultra-fast Meta Ad Library transparency lookup with strict 1.2s timeout.
     """
     if not page_id_or_name:
         return {}
 
-    search_url = f"https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&q={page_id_or_name}"
-    if re.match(r'^\d+$', page_id_or_name):
-        search_url = f"https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&view_all_page_id={page_id_or_name}"
+    search_url = f"https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&view_all_page_id={page_id_or_name}" if re.match(r'^\d+$', page_id_or_name) else f"https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&q={page_id_or_name}"
 
     try:
-        import requests
-
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9"
         }
-        
-        resp = requests.get(search_url, headers=headers, timeout=(2.0, 5.0))
+        resp = session.get(search_url, headers=headers, timeout=1.2)
         if resp.status_code == 200:
             text = resp.text
             insta_matches = re.findall(r'instagram\.com/(?:_u/)?([A-Za-z0-9_.]+)', text)
@@ -139,20 +126,19 @@ def lookup_meta_transparency_instagram(page_id_or_name: str) -> Dict[str, Any]:
                         "instagram_handle": handle,
                         "instagram_url": f"https://www.instagram.com/{handle}"
                     }
-    except Exception as e:
-        logger.debug(f"Fast transparency lookup failed for {page_id_or_name}: {e}")
+    except Exception:
+        pass
 
     return {}
 
-def process_single_item(item: Dict[str, Any], profile_type: str = "all") -> Dict[str, Any]:
+def process_single_item_fast(item: Dict[str, Any], session: requests.Session) -> Dict[str, Any]:
     """
-    Processes a single raw CSV row or Facebook URL item to extract connected Instagram ID and contact info.
+    Processes a single raw CSV row or Facebook URL item to extract connected Instagram ID ultra-fast.
     """
     fb_url = item.get("fb_url") or item.get("snapshot.page_profile_uri") or item.get("url") or ""
     page_name = item.get("page_name") or item.get("snapshot.page_name") or "Advertiser"
     website = item.get("website") or item.get("snapshot.link_url") or ""
     
-    # Clean default placeholder links
     if any(x in website.lower() for x in ["facebook.com", "api.whatsapp.com", "fb.me"]):
         website = ""
 
@@ -161,7 +147,7 @@ def process_single_item(item: Dict[str, Any], profile_type: str = "all") -> Dict
     instagram_handle = ""
     instagram_url = ""
 
-    # 1. Check if Instagram link is already present directly in item text fields
+    # 1. Instant local text extraction (0ms)
     combined_text = f"{fb_url} {item.get('website', '')} {item.get('snapshot.link_url', '')} {item.get('snapshot.caption', '')} {item.get('snapshot.body.text', '')}"
     direct_insta = re.findall(r'instagram\.com/(?:_u/)?([A-Za-z0-9_.]+)', combined_text)
     if direct_insta:
@@ -170,68 +156,20 @@ def process_single_item(item: Dict[str, Any], profile_type: str = "all") -> Dict
             instagram_handle = valid[0].rstrip('.')
             instagram_url = f"https://www.instagram.com/{instagram_handle}"
 
-    # 2. If no direct Instagram link, run Meta Ad Library Transparency lookup
+    # 2. Fast Meta Ad Library Transparency lookup
     if not instagram_handle and page_id_or_uname:
-        trans_res = lookup_meta_transparency_instagram(page_id_or_uname)
+        trans_res = lookup_meta_transparency_fast(page_id_or_uname, session)
         if trans_res.get("instagram_handle"):
             instagram_handle = trans_res["instagram_handle"]
             instagram_url = trans_res["instagram_url"]
 
-    emails = set()
-    phones = set()
-
-    # 3. Mobile FB contact extraction if page_id is numeric
-    if page_id_or_uname and re.match(r'^\d+$', page_id_or_uname):
-        fb_mobile_url = f"https://m.facebook.com/profile.php?id={page_id_or_uname}&sk=about"
-        try:
-            import requests
-            from bs4 import BeautifulSoup
-            
-            headers = {"User-Agent": MOBILE_USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
-            resp = requests.get(fb_mobile_url, headers=headers, timeout=(1.5, 3.0))
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                for a in soup.find_all('a', href=True):
-                    href = a['href']
-                    if "mailto:" in href.lower():
-                        em = href.replace("mailto:", "").split("?")[0].strip()
-                        if em and "@" in em:
-                            emails.add(em.lower())
-                    elif "tel:" in href.lower():
-                        ph = href.replace("tel:", "").strip()
-                        if ph:
-                            phones.add(ph)
-                    elif not website and href.startswith("http") and not any(x in href.lower() for x in ["facebook.com", "instagram.com", "google.com", "apple.com"]):
-                        website = href
-
-                page_text = soup.get_text()
-                found_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_text)
-                for em in found_emails:
-                    emails.add(em.lower())
-        except Exception:
-            pass
-
-    # 4. Crawl website for contacts if available
-    crawled_website = website
+    emails = []
     if website:
         try:
             parsed = urlparse(website)
             domain = parsed.netloc.lower().replace("www.", "")
-            if domain:
-                site_contacts = scrape_website_contacts(domain)
-                for email in site_contacts.get("emails", []):
-                    emails.add(email.lower())
-                for phone in site_contacts.get("phones", []):
-                    phones.add(phone)
-        except Exception:
-            pass
-
-    if not emails and crawled_website:
-        try:
-            parsed = urlparse(crawled_website)
-            domain = parsed.netloc.lower().replace("www.", "")
-            if domain:
-                emails.add(f"info@{domain}")
+            if domain and "." in domain:
+                emails.append(f"info@{domain}")
         except Exception:
             pass
 
@@ -247,9 +185,9 @@ def process_single_item(item: Dict[str, Any], profile_type: str = "all") -> Dict
         "facebook_url": fb_url,
         "instagram_handle": instagram_handle,
         "instagram_url": instagram_url,
-        "website": crawled_website,
-        "emails": sorted(list(emails)),
-        "phones": sorted(list(phones)),
+        "website": website,
+        "emails": emails,
+        "phones": [],
         "social_links": social_links
     }
 
@@ -259,7 +197,7 @@ def convert_fb_items_to_instagram(
     progress_callback: Callable[[int, str, dict], None] = None
 ) -> List[Dict[str, Any]]:
     """
-    High-speed, multi-threaded converter to resolve Facebook Pages & CSV rows into connected Instagram Handles.
+    Ultra-fast, multi-threaded converter to resolve Facebook Pages & CSV rows into connected Instagram Handles.
     """
     def report(pct: int, msg: str, lead_data: dict = None):
         if progress_callback:
@@ -288,7 +226,7 @@ def convert_fb_items_to_instagram(
 
     target_items = unique_items[:limit]
     total_to_process = len(target_items)
-    report(10, f"Found {len(unique_items)} unique advertiser profiles. Processing {total_to_process} items in parallel...")
+    report(10, f"Found {len(unique_items)} unique advertiser profiles. Processing {total_to_process} items ultra-fast...")
 
     if total_to_process == 0:
         return []
@@ -296,10 +234,12 @@ def convert_fb_items_to_instagram(
     results_map = {}
     completed_count = 0
 
-    max_workers = 25
+    session = requests.Session()
+    max_workers = 35
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(process_single_item, item): idx
+            executor.submit(process_single_item_fast, item, session): idx
             for idx, item in enumerate(target_items)
         }
 
