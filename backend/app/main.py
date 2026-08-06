@@ -15,6 +15,7 @@ import pandas as pd
 import json
 import queue
 import threading
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
 from .database import engine, Base, get_db
