@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Megaphone, Search, Globe, Sparkles, Copy, Check, ExternalLink,
   Download, RefreshCw, AlertCircle, Trash2, Cpu, Terminal, Play,
-  Mail, Phone, CheckCircle
+  Mail, Phone, CheckCircle, Upload, FileText, FileSpreadsheet
 } from 'lucide-react';
 
 const Facebook = ({ className = "w-4 h-4" }) => (
@@ -17,45 +17,59 @@ const Instagram = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
-
 export default function MetaAdScraperPage({ API_BASE, showToast }) {
-  const [adsUrl, setAdsUrl] = useState('');
-  const [profileType, setProfileType] = useState('facebook'); // 'facebook' | 'instagram'
-  const [limit, setLimit] = useState(20);
+  const [inputMode, setInputMode] = useState('csv'); // 'csv' | 'urls'
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [rawTextUrls, setRawTextUrls] = useState('');
+  const [limit, setLimit] = useState(500);
 
   const [loading, setLoading] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [logFeed, setLogFeed] = useState([]);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
   const [leads, setLeads] = useState([]);
   const [error, setError] = useState('');
+  
   const [copiedId, setCopiedId] = useState(null);
   const [copiedText, setCopiedText] = useState('');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
-  const timerRef = useRef(null);
   const terminalEndRef = useRef(null);
+  const timerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
-    if (terminalEndRef.current) {
-      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
+    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logFeed]);
 
-  const addLog = (message) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setLogFeed((prev) => [...prev, `[${timestamp}] ${message}`]);
+  const addLog = (msg) => {
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setLogFeed((prev) => [...prev, `[${timeStr}] ${msg}`]);
   };
 
-  const handleLaunchScraper = async (e) => {
-    if (e) e.preventDefault();
-    if (!adsUrl.trim()) {
-      setError('Please paste a valid Meta Ad Library search URL.');
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+      setError('');
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setSelectedFile(e.dataTransfer.files[0]);
+      setError('');
+    }
+  };
+
+  const handleLaunchConverter = async (e) => {
+    e.preventDefault();
+    if (inputMode === 'csv' && !selectedFile) {
+      setError('Please select or drag a CSV file to convert.');
       return;
     }
-    if (!adsUrl.includes('facebook.com/ads/library')) {
-      setError('The URL must be a valid Meta/Facebook Ad Library link (e.g. starting with https://www.facebook.com/ads/library/...)');
+    if (inputMode === 'urls' && !rawTextUrls.trim()) {
+      setError('Please paste at least one Facebook Page URL or ID.');
       return;
     }
 
@@ -64,10 +78,11 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
     setLeads([]);
     setLogFeed([]);
     setProgressPercent(5);
-    setProgressMessage('Launching browser and setting up Playwright context...');
-    addLog('Scraper initialized.');
-    addLog(`Target profile type: ${profileType.toUpperCase()}`);
-    addLog(`Limit: ${limit} advertisers`);
+    setProgressMessage('Parsing input dataset & starting converter...');
+    addLog('Converter initialized.');
+    addLog(`Mode: ${inputMode.toUpperCase()}`);
+    if (selectedFile) addLog(`File: ${selectedFile.name}`);
+    addLog(`Limit: ${limit} advertiser profiles`);
 
     setElapsedSeconds(0);
     timerRef.current = setInterval(() => {
@@ -75,14 +90,17 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
     }, 1000);
 
     try {
-      const resp = await fetch(`${API_BASE}/api/v1/stream-meta-ads`, {
+      const formData = new FormData();
+      if (inputMode === 'csv' && selectedFile) {
+        formData.append('file', selectedFile);
+      } else {
+        formData.append('raw_text', rawTextUrls);
+      }
+      formData.append('limit', limit.toString());
+
+      const resp = await fetch(`${API_BASE}/api/v1/convert-fb-to-insta`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ads_library_url: adsUrl.trim(),
-          profile_type: profileType,
-          limit: parseInt(limit)
-        })
+        body: formData
       });
 
       if (!resp.ok) {
@@ -120,22 +138,22 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
               }
             } else if (data.type === 'complete') {
               setProgressPercent(100);
-              setProgressMessage(data.message || 'Scrape complete!');
-              addLog(data.message || 'Scrape complete!');
+              setProgressMessage(data.message || 'Conversion complete!');
+              addLog(data.message || 'Conversion complete!');
               if (Array.isArray(data.leads)) {
                 setLeads(data.leads);
-                showToast(`Successfully extracted ${data.leads.length} advertiser leads!`);
+                showToast(`Successfully extracted ${data.leads.length} Instagram leads!`);
               }
             }
           } catch (err) {
-            // Non-JSON line or partial line, ignore
+            // Ignore non-JSON or partial chunk lines
           }
         }
       }
     } catch (err) {
       console.error(err);
-      setError(err.message || 'An error occurred during scraping.');
-      addLog(`[ERROR] Scraping failed: ${err.message}`);
+      setError(err.message || 'An error occurred during conversion.');
+      addLog(`[ERROR] Conversion failed: ${err.message}`);
     } finally {
       setLoading(false);
       if (timerRef.current) {
@@ -157,7 +175,7 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'meta_advertiser_leads.csv';
+        a.download = 'instagram_advertiser_leads.csv';
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -191,19 +209,19 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Header card */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-950 to-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-        <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-pink-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
           <div className="space-y-2">
             <div className="flex items-center space-x-3">
-              <div className="p-2.5 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400">
-                <Megaphone className="w-6 h-6 animate-pulse" />
+              <div className="p-2.5 rounded-xl bg-pink-600/20 border border-pink-500/30 text-pink-400">
+                <Instagram className="w-6 h-6 animate-pulse" />
               </div>
               <h2 className="text-2xl font-bold text-white tracking-tight">
-                Meta Ad Library Extractor & Lead Finder
+                FB & Ad Library CSV to Instagram Converter
               </h2>
             </div>
             <p className="text-sm text-slate-400 max-w-2xl">
-              Extract active advertisers directly from Facebook Ad Library. Find page/profile owners, and auto-scrape email addresses, phone numbers, and websites.
+              Upload any Meta Ad Library CSV dataset or paste Facebook Page URLs. Converts Facebook Page IDs into verified Instagram handles, website links, and email contacts.
             </p>
           </div>
         </div>
@@ -212,79 +230,120 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Scraper Inputs Form */}
         <div className="lg:col-span-1 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-lg space-y-6">
-          <div className="flex items-center space-x-2 border-b border-slate-800 pb-3">
-            <Cpu className="w-5 h-5 text-indigo-400" />
-            <h3 className="text-base font-semibold text-slate-200">Extraction Setup</h3>
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center space-x-2">
+              <Cpu className="w-5 h-5 text-pink-400" />
+              <h3 className="text-base font-semibold text-slate-200">Dataset Converter</h3>
+            </div>
+            
+            {/* Input mode switcher */}
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-850">
+              <button
+                type="button"
+                onClick={() => setInputMode('csv')}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-all flex items-center space-x-1 ${
+                  inputMode === 'csv'
+                    ? 'bg-pink-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>CSV File</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setInputMode('urls')}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-all flex items-center space-x-1 ${
+                  inputMode === 'urls'
+                    ? 'bg-pink-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Paste URLs</span>
+              </button>
+            </div>
           </div>
 
-          <form onSubmit={handleLaunchScraper} className="space-y-5">
-            {/* Meta Ad Library URL Input */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-300 block">
-                Meta Ad Library Search URL
-              </label>
-              <textarea
-                value={adsUrl}
-                onChange={(e) => setAdsUrl(e.target.value)}
-                placeholder="https://www.facebook.com/ads/library/?active_status=active&ad_type=all&q=plumber..."
-                rows={4}
-                className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none font-mono"
-              />
-              <span className="text-[10px] text-slate-500 block leading-tight">
-                Perform a search in your browser on Meta Ad Library, copy the entire browser URL, and paste it here.
-              </span>
-            </div>
-
-            {/* Profile extraction target */}
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-300 block">
-                Profile Extraction Target
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setProfileType('facebook')}
-                  className={`flex items-center justify-center space-x-2 p-2.5 rounded-xl border text-xs font-medium transition-all ${
-                    profileType === 'facebook'
-                      ? 'bg-indigo-600/10 border-indigo-500 text-indigo-400'
-                      : 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800'
+          <form onSubmit={handleLaunchConverter} className="space-y-5">
+            {inputMode === 'csv' ? (
+              /* CSV File Upload Dropzone */
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-300 block">
+                  Upload Meta Ad Library CSV File
+                </label>
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-3 ${
+                    selectedFile
+                      ? 'border-emerald-500/50 bg-emerald-500/5'
+                      : 'border-slate-800 hover:border-pink-500/40 bg-slate-950/60 hover:bg-slate-950'
                   }`}
                 >
-                  <Facebook className="w-4 h-4" />
-                  <span>Facebook Pages</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setProfileType('instagram')}
-                  className={`flex items-center justify-center space-x-2 p-2.5 rounded-xl border text-xs font-medium transition-all ${
-                    profileType === 'instagram'
-                      ? 'bg-indigo-600/10 border-indigo-500 text-indigo-400'
-                      : 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800'
-                  }`}
-                >
-                  <Instagram className="w-4 h-4" />
-                  <span>Instagram Handles</span>
-                </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv"
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                  <div className="p-3 rounded-full bg-slate-900 text-pink-400 border border-slate-800">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  {selectedFile ? (
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold text-emerald-400 font-mono truncate max-w-[220px]">
+                        {selectedFile.name}
+                      </p>
+                      <p className="text-[10px] text-slate-500">
+                        {(selectedFile.size / 1024).toFixed(1)} KB • Click or drag to change
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold text-slate-300">
+                        Click or drag & drop CSV file
+                      </p>
+                      <p className="text-[10px] text-slate-500">
+                        Supports Apify, Meta Ad Library, or custom FB dataset CSV files.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-
-
+            ) : (
+              /* Raw URLs Textarea */
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-300 block">
+                  Facebook Page URLs or IDs (One per line)
+                </label>
+                <textarea
+                  value={rawTextUrls}
+                  onChange={(e) => setRawTextUrls(e.target.value)}
+                  placeholder="https://www.facebook.com/61550243665702/&#10;https://www.facebook.com/scentsnstoriesintl/&#10;104086772515156..."
+                  rows={6}
+                  className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500 resize-none font-mono"
+                />
+              </div>
+            )}
 
             {/* Limit Input */}
-            <div className="space-y-2 mb-4">
+            <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-300 block">
-                Max Results to Scrape
+                Max Advertisers to Convert
               </label>
               <input
                 type="number"
                 min="5"
                 max="5000"
                 value={limit}
-                onChange={(e) => setLimit(Math.min(5000, Math.max(5, parseInt(e.target.value) || 20)))}
-                className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono"
+                onChange={(e) => setLimit(Math.min(5000, Math.max(5, parseInt(e.target.value) || 100)))}
+                className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500 font-mono"
               />
               <span className="text-[10px] text-slate-500 block leading-tight">
-                Enter a value between 5 and 5000. Large requests (e.g. 2000+) will take longer to load and enrich.
+                Unique profile count limit (e.g. 500 - 2500).
               </span>
             </div>
 
@@ -298,72 +357,69 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
             <button
               type="submit"
               disabled={loading}
-              className={`w-full py-3 rounded-xl font-semibold text-sm transition-all shadow-lg flex items-center justify-center space-x-2 ${
-                loading
-                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                  : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/20 hover:scale-[1.01]'
-              }`}
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white text-xs font-semibold tracking-wide shadow-lg shadow-pink-600/20 transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
             >
               {loading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Scraping Meta Ads ({progressPercent}%)</span>
+                  <span>Converting & Extracting ({progressPercent}%)</span>
                 </>
               ) : (
                 <>
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>Launch Playwright Scraper</span>
+                  <Play className="w-4 h-4 fill-white" />
+                  <span>Convert & Extract Instagram IDs</span>
                 </>
               )}
             </button>
           </form>
         </div>
 
-        {/* Live Terminal Progress feed */}
-        <div className="lg:col-span-2 bg-slate-950 border border-slate-850 rounded-2xl shadow-lg relative overflow-hidden flex flex-col h-[400px] lg:h-auto">
-          {/* Terminal Titlebar */}
-          <div className="bg-slate-900 border-b border-slate-850 px-4 py-3 flex items-center justify-between shrink-0">
+        {/* Live Terminal & Progress Feeds */}
+        <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-lg flex flex-col justify-between">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
             <div className="flex items-center space-x-2">
-              <Terminal className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs font-mono font-bold text-slate-300">live_crawler_logs.sh</span>
+              <Terminal className="w-5 h-5 text-pink-400" />
+              <h3 className="text-base font-semibold text-slate-200 font-mono text-xs">
+                &gt;_ live_converter_logs.sh
+              </h3>
             </div>
             {loading && (
-              <div className="flex items-center space-x-2 text-xs font-mono text-indigo-400">
+              <div className="flex items-center space-x-2 text-xs font-mono text-pink-400">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 <span>ELAPSED: {formatTime(elapsedSeconds)}</span>
               </div>
             )}
           </div>
 
-          {/* Progress Overlay bar */}
+          {/* Progress bar */}
           {loading && (
-            <div className="bg-slate-900/60 border-b border-slate-800/40 p-3 shrink-0">
-              <div className="flex justify-between items-center text-xs font-mono mb-1">
-                <span className="text-slate-400 truncate max-w-[80%]">{progressMessage}</span>
-                <span className="text-indigo-400 font-bold">{progressPercent}%</span>
+            <div className="space-y-1 mb-4">
+              <div className="flex justify-between text-xs text-slate-400 font-mono">
+                <span className="truncate max-w-[300px]">{progressMessage}</span>
+                <span>{progressPercent}%</span>
               </div>
-              <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-800">
+              <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
                 <div
-                  className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-full rounded-full transition-all duration-300"
+                  className="h-full bg-gradient-to-r from-pink-500 to-indigo-500 transition-all duration-300"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
             </div>
           )}
 
-          {/* Logs feed output */}
-          <div className="flex-1 p-4 font-mono text-[11px] text-slate-400 overflow-y-auto space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800">
+          {/* Terminal log output feed */}
+          <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 font-mono text-xs overflow-y-auto max-h-[320px] min-h-[260px] space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800">
             {logFeed.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-slate-600 text-center space-y-2 p-6">
                 <Cpu className="w-10 h-10 text-slate-700" />
-                <p>No active extraction logs. Fill in a Meta Ad Library URL on the left and start the scraper.</p>
+                <p>No active logs. Upload a Meta Ad Library CSV file or paste Facebook URLs on the left to start converting.</p>
               </div>
             ) : (
               logFeed.map((log, idx) => {
                 let colorClass = 'text-slate-400';
                 if (log.includes('[ERROR]')) colorClass = 'text-red-400';
                 else if (log.includes('Finished') || log.includes('Successfully')) colorClass = 'text-emerald-400';
-                else if (log.includes('Scraping') || log.includes('Crawling')) colorClass = 'text-indigo-300';
+                else if (log.includes('Instagram')) colorClass = 'text-pink-300';
                 
                 return (
                   <div key={idx} className={`${colorClass} break-words leading-relaxed`}>
@@ -384,16 +440,16 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
             <div className="space-y-1">
               <h3 className="text-lg font-bold text-white tracking-tight flex items-center space-x-2">
                 <CheckCircle className="w-5 h-5 text-emerald-400" />
-                <span>Extracted Advertisers ({leads.length})</span>
+                <span>Converted Instagram & Business Leads ({leads.length})</span>
                 {loading && (
-                  <span className="inline-flex items-center space-x-1 text-[10px] bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 px-2 py-0.5 rounded-full font-mono animate-pulse ml-2">
+                  <span className="inline-flex items-center space-x-1 text-[10px] bg-pink-500/10 border border-pink-500/30 text-pink-400 px-2 py-0.5 rounded-full font-mono animate-pulse ml-2">
                     <RefreshCw className="w-3 h-3 animate-spin mr-1" />
                     Live Streaming
                   </span>
                 )}
               </h3>
               <p className="text-xs text-slate-400">
-                Extracted contacts from public social profiles and landing page websites.
+                Resolved Instagram handles, website links, and email contacts extracted from input profiles.
               </p>
             </div>
             <div className="flex items-center space-x-3">
@@ -420,6 +476,7 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
               <thead>
                 <tr className="bg-slate-950/60 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
                   <th className="p-4">Advertiser Name</th>
+                  <th className="p-4">Instagram Handle</th>
                   <th className="p-4">Website</th>
                   <th className="p-4">Emails</th>
                   <th className="p-4">Phone Numbers</th>
@@ -429,136 +486,158 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
               <tbody className="divide-y divide-slate-850 bg-slate-900/40">
                 {leads.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="p-8 text-center text-slate-500 font-mono">
+                    <td colSpan={6} className="p-8 text-center text-slate-500 font-mono">
                       <div className="flex flex-col items-center justify-center space-y-2">
-                        <RefreshCw className="w-5 h-5 text-indigo-400 animate-spin" />
-                        <p>Extracting advertisers live... Enriched contacts will appear here in real-time.</p>
+                        <RefreshCw className="w-5 h-5 text-pink-400 animate-spin" />
+                        <p>Converting profiles live... Instagram handles & contacts will appear here in real-time.</p>
                       </div>
                     </td>
                   </tr>
                 ) : (
                   leads.map((lead, idx) => (
                     <tr key={idx} className="hover:bg-slate-850/30 transition-colors">
-                    {/* Advertiser name */}
-                    <td className="p-4">
-                      <div className="font-semibold text-slate-200 flex items-center space-x-1.5">
-                        <span>{lead.advertiser_name}</span>
-                        {lead.profile_url && (
-                          <a
-                            href={lead.profile_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-slate-500 hover:text-indigo-400 transition-all"
-                          >
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-500 block font-mono">
-                        Page ID: {lead.page_id || 'N/A'}
-                      </span>
-                    </td>
-
-                    {/* Website */}
-                    <td className="p-4">
-                      {lead.website ? (
-                        <div className="flex items-center space-x-1.5">
-                          <Globe className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <a
-                            href={lead.website}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-indigo-400 hover:underline truncate max-w-[200px]"
-                          >
-                            {lead.website.replace(/(^\w+:|^)\/\//, '').replace('www.', '')}
-                          </a>
+                      {/* Advertiser name */}
+                      <td className="p-4">
+                        <div className="font-semibold text-slate-200 flex items-center space-x-1.5">
+                          <span>{lead.advertiser_name}</span>
                         </div>
-                      ) : (
-                        <span className="text-slate-600 font-mono">No website found</span>
-                      )}
-                    </td>
+                        <span className="text-[10px] text-slate-500 block font-mono">
+                          Page ID: {lead.page_id || 'N/A'}
+                        </span>
+                      </td>
 
-                    {/* Emails */}
-                    <td className="p-4">
-                      {lead.emails && lead.emails.length > 0 ? (
-                        <div className="flex flex-col space-y-1">
-                          {lead.emails.map((email, eIdx) => (
-                            <div key={eIdx} className="flex items-center space-x-1.5">
-                              <Mail className="w-3 h-3 text-slate-500 shrink-0" />
-                              <span className="font-mono text-slate-300">{email}</span>
-                              <button
-                                onClick={() => handleCopy(email, `email_${idx}_${eIdx}`)}
-                                className="text-slate-600 hover:text-slate-400"
-                              >
-                                {copiedId === `email_${idx}_${eIdx}` ? (
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                ) : (
-                                  <Copy className="w-3 h-3" />
-                                )}
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-slate-600 font-mono">No emails found</span>
-                      )}
-                    </td>
-
-                    {/* Phone Numbers */}
-                    <td className="p-4">
-                      {lead.phones && lead.phones.length > 0 ? (
-                        <div className="flex flex-col space-y-1">
-                          {lead.phones.map((phone, pIdx) => (
-                            <div key={pIdx} className="flex items-center space-x-1.5">
-                              <Phone className="w-3 h-3 text-slate-500 shrink-0" />
-                              <span className="font-mono text-slate-300">{phone}</span>
-                              <button
-                                onClick={() => handleCopy(phone, `phone_${idx}_${pIdx}`)}
-                                className="text-slate-600 hover:text-slate-400"
-                              >
-                                {copiedId === `phone_${idx}_${pIdx}` ? (
-                                  <Check className="w-3 h-3 text-emerald-400" />
-                                ) : (
-                                  <Copy className="w-3 h-3" />
-                                )}
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-slate-600 font-mono">No phones found</span>
-                      )}
-                    </td>
-
-                    {/* Social profiles */}
-                    <td className="p-4">
-                      <div className="flex items-center space-x-2">
-                        {lead.social_links.facebook && (
-                          <a
-                            href={lead.social_links.facebook}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/10 hover:border-indigo-500/30 transition-all"
-                            title="Facebook Page"
-                          >
-                            <Facebook className="w-3.5 h-3.5" />
-                          </a>
+                      {/* Instagram Handle */}
+                      <td className="p-4">
+                        {lead.instagram_handle ? (
+                          <div className="flex items-center space-x-2">
+                            <a
+                              href={lead.instagram_url || `https://instagram.com/${lead.instagram_handle}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 rounded-lg bg-pink-500/10 border border-pink-500/20 text-pink-400 font-mono font-semibold hover:bg-pink-500/20 transition-all flex items-center space-x-1"
+                            >
+                              <Instagram className="w-3.5 h-3.5 shrink-0" />
+                              <span>@{lead.instagram_handle}</span>
+                              <ExternalLink className="w-3 h-3 text-pink-500/60" />
+                            </a>
+                            <button
+                              onClick={() => handleCopy(`@${lead.instagram_handle}`, `insta_${idx}`)}
+                              className="text-slate-600 hover:text-slate-400"
+                              title="Copy Handle"
+                            >
+                              {copiedId === `insta_${idx}` ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-slate-600 font-mono">No Instagram found</span>
                         )}
-                        {lead.social_links.instagram && (
-                          <a
-                            href={lead.social_links.instagram}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 rounded-lg bg-pink-500/10 hover:bg-pink-500/20 text-pink-400 border border-pink-500/10 hover:border-pink-500/30 transition-all"
-                            title="Instagram Profile"
-                          >
-                            <Instagram className="w-3.5 h-3.5" />
-                          </a>
+                      </td>
+
+                      {/* Website */}
+                      <td className="p-4">
+                        {lead.website ? (
+                          <div className="flex items-center space-x-1.5">
+                            <Globe className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                            <a
+                              href={lead.website}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-indigo-400 hover:underline truncate max-w-[180px]"
+                            >
+                              {lead.website.replace(/(^\w+:|^)\/\//, '').replace('www.', '')}
+                            </a>
+                          </div>
+                        ) : (
+                          <span className="text-slate-600 font-mono">No website found</span>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                )))}
+                      </td>
+
+                      {/* Emails */}
+                      <td className="p-4">
+                        {lead.emails && lead.emails.length > 0 ? (
+                          <div className="flex flex-col space-y-1">
+                            {lead.emails.map((email, eIdx) => (
+                              <div key={eIdx} className="flex items-center space-x-1.5">
+                                <Mail className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span className="font-mono text-slate-300">{email}</span>
+                                <button
+                                  onClick={() => handleCopy(email, `email_${idx}_${eIdx}`)}
+                                  className="text-slate-600 hover:text-slate-400"
+                                >
+                                  {copiedId === `email_${idx}_${eIdx}` ? (
+                                    <Check className="w-3 h-3 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="w-3 h-3" />
+                                  )}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-slate-600 font-mono">No emails found</span>
+                        )}
+                      </td>
+
+                      {/* Phone Numbers */}
+                      <td className="p-4">
+                        {lead.phones && lead.phones.length > 0 ? (
+                          <div className="flex flex-col space-y-1">
+                            {lead.phones.map((phone, pIdx) => (
+                              <div key={pIdx} className="flex items-center space-x-1.5">
+                                <Phone className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span className="font-mono text-slate-300">{phone}</span>
+                                <button
+                                  onClick={() => handleCopy(phone, `phone_${idx}_${pIdx}`)}
+                                  className="text-slate-600 hover:text-slate-400"
+                                >
+                                  {copiedId === `phone_${idx}_${pIdx}` ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-slate-600 font-mono">No phones found</span>
+                        )}
+                      </td>
+
+                      {/* Social profiles */}
+                      <td className="p-4">
+                        <div className="flex items-center space-x-2">
+                          {lead.social_links && lead.social_links.facebook && (
+                            <a
+                              href={lead.social_links.facebook}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/10 hover:border-indigo-500/30 transition-all"
+                              title="Facebook Page"
+                            >
+                              <Facebook className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                          {lead.social_links && lead.social_links.instagram && (
+                            <a
+                              href={lead.social_links.instagram}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 rounded-lg bg-pink-500/10 hover:bg-pink-500/20 text-pink-400 border border-pink-500/10 hover:border-pink-500/30 transition-all"
+                              title="Instagram Profile"
+                            >
+                              <Instagram className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

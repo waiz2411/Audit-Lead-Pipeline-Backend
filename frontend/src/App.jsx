@@ -560,8 +560,8 @@ function App() {
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <Megaphone className="w-4 h-4 text-indigo-400" />
-            <span>Meta Ad Extractor</span>
+            <InstagramIcon className="w-4 h-4 text-pink-400" />
+            <span>FB to Insta Converter</span>
           </button>
           <button
             onClick={() => setActiveTab('poor_leads')}

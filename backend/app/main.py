@@ -29,6 +29,8 @@ from .auditor.poor_website_auditor import audit_poor_website
 from .worker import worker_manager_loop, close_browser
 from .email_service import send_smtp_email, render_template
 from .services.meta_ad_scraper import scrape_meta_ads
+from .services.fb_to_insta_converter import convert_fb_items_to_instagram
+from fastapi import UploadFile, File, Form
 
 
 
@@ -867,6 +869,87 @@ def stream_meta_ads(payload: MetaAdScrapeRequest):
             "percent": 100,
             "message": f"Successfully extracted {len(leads_json)} Meta advertiser leads!",
             "leads": leads_json
+        }) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/v1/convert-fb-to-insta")
+async def convert_fb_to_insta(
+    file: Optional[UploadFile] = File(None),
+    raw_text: Optional[str] = Form(None),
+    limit: Optional[int] = Form(500)
+):
+    """
+    Stream real-time resolution of Facebook URLs & Ad Library CSV exports into connected Instagram handles and contacts.
+    """
+    items = []
+    
+    if file:
+        try:
+            contents = await file.read()
+            import io, pandas as pd
+            df = pd.read_csv(io.BytesIO(contents), low_memory=False)
+            items = df.to_dict(orient="records")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error reading uploaded CSV file: {e}")
+            
+    if not items and raw_text:
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        items = [{"url": line} for line in lines]
+
+    def event_generator():
+        prog_queue = queue.Queue()
+
+        def _on_progress(pct: int, msg: str, lead_data: dict = None):
+            prog_queue.put((pct, msg, lead_data))
+
+        raw_leads_container = []
+        scrape_done = threading.Event()
+
+        def _do_scrape():
+            try:
+                res = convert_fb_items_to_instagram(
+                    items,
+                    limit=limit or 500,
+                    progress_callback=_on_progress
+                )
+                raw_leads_container.extend(res)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Error in FB to Instagram conversion: {e}")
+            finally:
+                scrape_done.set()
+
+        thread = threading.Thread(target=_do_scrape)
+        thread.start()
+
+        yield json.dumps({"type": "progress", "percent": 5, "message": "Parsing input dataset & starting converter..."}) + "\n"
+
+        while not scrape_done.is_set() or not prog_queue.empty():
+            try:
+                item = prog_queue.get(timeout=0.15)
+                if len(item) == 3:
+                    pct, msg, lead_data = item
+                else:
+                    pct, msg = item
+                    lead_data = None
+                
+                payload_data = {"type": "progress", "percent": pct, "message": msg}
+                if lead_data:
+                    payload_data["lead"] = lead_data
+                yield json.dumps(payload_data) + "\n"
+            except queue.Empty:
+                pass
+
+        thread.join()
+        
+        yield json.dumps({
+            "type": "complete",
+            "percent": 100,
+            "message": f"Successfully converted {len(raw_leads_container)} Meta advertiser leads!",
+            "leads": raw_leads_container
         }) + "\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

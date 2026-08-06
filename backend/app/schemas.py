@@ -221,3 +221,21 @@ class MetaAdLeadSchema(BaseModel):
     social_links: Dict[str, str] = {}
 
 
+class FBToInstaItemRequest(BaseModel):
+    url_or_text: Optional[str] = ""
+    limit: Optional[int] = 500
+
+
+class FBToInstaLeadSchema(BaseModel):
+    advertiser_name: str
+    page_id: Optional[str] = ""
+    facebook_url: Optional[str] = ""
+    instagram_handle: Optional[str] = ""
+    instagram_url: Optional[str] = ""
+    website: Optional[str] = ""
+    emails: List[str] = []
+    phones: List[str] = []
+    social_links: Dict[str, str] = {}
+
+
+
