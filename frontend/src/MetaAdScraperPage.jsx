@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Megaphone, Search, Globe, Sparkles, Copy, Check, ExternalLink,
   Download, RefreshCw, AlertCircle, Trash2, Cpu, Terminal, Play,
-  Mail, Phone, CheckCircle, Upload, FileText, FileSpreadsheet
+  Mail, Phone, CheckCircle, Upload, FileText, FileSpreadsheet, Filter
 } from 'lucide-react';
 
 const Facebook = ({ className = "w-4 h-4" }) => (
@@ -29,6 +29,13 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
   const [logFeed, setLogFeed] = useState([]);
   const [leads, setLeads] = useState([]);
   const [error, setError] = useState('');
+
+  // Table Filter states
+  const [searchQuery, setSearchQuery] = useState('');
+  const [websiteFilter, setWebsiteFilter] = useState('all'); // 'all' | 'has_website' | 'no_website'
+  const [instaFilter, setInstaFilter] = useState('all'); // 'all' | 'has_insta' | 'no_insta'
+  const [emailFilter, setEmailFilter] = useState(false);
+  const [phoneFilter, setPhoneFilter] = useState(false);
   
   const [copiedId, setCopiedId] = useState(null);
   const [copiedText, setCopiedText] = useState('');
@@ -162,24 +169,53 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
     }
   };
 
+  // Filtered Leads Calculation
+  const displayedLeads = leads.filter(lead => {
+    // Website filter
+    if (websiteFilter === 'has_website' && !lead.website) return false;
+    if (websiteFilter === 'no_website' && lead.website) return false;
+
+    // Instagram filter
+    if (instaFilter === 'has_insta' && !lead.instagram_handle) return false;
+    if (instaFilter === 'no_insta' && lead.instagram_handle) return false;
+
+    // Email & Phone filters
+    if (emailFilter && (!lead.emails || lead.emails.length === 0)) return false;
+    if (phoneFilter && (!lead.phones || lead.phones.length === 0)) return false;
+
+    // Search query filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchName = lead.advertiser_name?.toLowerCase().includes(q);
+      const matchPageId = lead.page_id?.toLowerCase().includes(q);
+      const matchInsta = lead.instagram_handle?.toLowerCase().includes(q);
+      const matchWebsite = lead.website?.toLowerCase().includes(q);
+      const matchEmail = lead.emails?.some(e => e.toLowerCase().includes(q));
+      return matchName || matchPageId || matchInsta || matchWebsite || matchEmail;
+    }
+
+    return true;
+  });
+
   const handleExportCSV = async () => {
-    if (leads.length === 0) return;
+    const targetLeads = displayedLeads.length > 0 ? displayedLeads : leads;
+    if (targetLeads.length === 0) return;
     try {
       const resp = await fetch(`${API_BASE}/api/v1/meta-ads/export-csv`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(leads)
+        body: JSON.stringify(targetLeads)
       });
       if (resp.ok) {
         const blob = await resp.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'instagram_advertiser_leads.csv';
+        a.download = `instagram_leads_export_${targetLeads.length}.csv`;
         document.body.appendChild(a);
         a.click();
         a.remove();
-        showToast('CSV export downloaded successfully!');
+        showToast(`Downloaded ${targetLeads.length} leads to CSV!`);
       } else {
         showToast('Failed to export CSV');
       }
@@ -440,7 +476,10 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
             <div className="space-y-1">
               <h3 className="text-lg font-bold text-white tracking-tight flex items-center space-x-2">
                 <CheckCircle className="w-5 h-5 text-emerald-400" />
-                <span>Converted Instagram & Business Leads ({leads.length})</span>
+                <span>
+                  Converted Instagram & Business Leads ({displayedLeads.length}
+                  {displayedLeads.length !== leads.length && ` / ${leads.length} total`})
+                </span>
                 {loading && (
                   <span className="inline-flex items-center space-x-1 text-[10px] bg-pink-500/10 border border-pink-500/30 text-pink-400 px-2 py-0.5 rounded-full font-mono animate-pulse ml-2">
                     <RefreshCw className="w-3 h-3 animate-spin mr-1" />
@@ -455,11 +494,11 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
             <div className="flex items-center space-x-3">
               <button
                 onClick={handleExportCSV}
-                disabled={leads.length === 0}
+                disabled={displayedLeads.length === 0 && leads.length === 0}
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium text-xs transition-all flex items-center space-x-2 shadow-lg shadow-emerald-600/10"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Export to CSV</span>
+                <span>Export ({displayedLeads.length}) CSV</span>
               </button>
               <button
                 onClick={() => setLeads([])}
@@ -468,6 +507,108 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
               >
                 <Trash2 className="w-4 h-4" />
               </button>
+            </div>
+          </div>
+
+          {/* Quick Filter Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+            {/* Search Input */}
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search name, handle, page ID, email..."
+                className="w-full pl-9 pr-4 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-pink-500 font-mono"
+              />
+            </div>
+
+            {/* Filter Toggle Buttons */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {/* Website Filter */}
+              <div className="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setWebsiteFilter('all')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${websiteFilter === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  All Web
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWebsiteFilter('has_website')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all flex items-center space-x-1 ${websiteFilter === 'has_website' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  <Globe className="w-3 h-3" />
+                  <span>Has Web</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWebsiteFilter('no_website')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all flex items-center space-x-1 ${websiteFilter === 'no_website' ? 'bg-amber-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  <span>No Web</span>
+                </button>
+              </div>
+
+              {/* Instagram Filter */}
+              <div className="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setInstaFilter('all')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${instaFilter === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  All Insta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInstaFilter('has_insta')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all flex items-center space-x-1 ${instaFilter === 'has_insta' ? 'bg-pink-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  <Instagram className="w-3 h-3" />
+                  <span>Has Insta</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInstaFilter('no_insta')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all flex items-center space-x-1 ${instaFilter === 'no_insta' ? 'bg-red-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  <span>No Insta</span>
+                </button>
+              </div>
+
+              {/* Email & Phone Toggles */}
+              <button
+                type="button"
+                onClick={() => setEmailFilter(!emailFilter)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all border ${emailFilter ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'}`}
+              >
+                ✉️ Has Email
+              </button>
+              <button
+                type="button"
+                onClick={() => setPhoneFilter(!phoneFilter)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all border ${phoneFilter ? 'bg-purple-500/20 text-purple-400 border-purple-500/40' : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'}`}
+              >
+                📞 Has Phone
+              </button>
+
+              {(websiteFilter !== 'all' || instaFilter !== 'all' || emailFilter || phoneFilter || searchQuery) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWebsiteFilter('all');
+                    setInstaFilter('all');
+                    setEmailFilter(false);
+                    setPhoneFilter(false);
+                    setSearchQuery('');
+                  }}
+                  className="px-2 py-1 text-[10px] text-slate-500 hover:text-red-400 font-mono underline ml-1"
+                >
+                  Reset Filters
+                </button>
+              )}
             </div>
           </div>
 
@@ -484,17 +625,26 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-850 bg-slate-900/40">
-                {leads.length === 0 ? (
+                {displayedLeads.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="p-8 text-center text-slate-500 font-mono">
                       <div className="flex flex-col items-center justify-center space-y-2">
-                        <RefreshCw className="w-5 h-5 text-pink-400 animate-spin" />
-                        <p>Converting profiles live... Instagram handles & contacts will appear here in real-time.</p>
+                        {loading ? (
+                          <>
+                            <RefreshCw className="w-5 h-5 text-pink-400 animate-spin" />
+                            <p>Converting profiles live... Instagram handles & contacts will appear here in real-time.</p>
+                          </>
+                        ) : (
+                          <>
+                            <Filter className="w-5 h-5 text-slate-600" />
+                            <p>No business leads match your selected filters.</p>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
                 ) : (
-                  leads.map((lead, idx) => (
+                  displayedLeads.map((lead, idx) => (
                     <tr key={idx} className="hover:bg-slate-850/30 transition-colors">
                       {/* Advertiser name */}
                       <td className="p-4">
