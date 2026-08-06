@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import {
   MapPin, Search, Phone, Mail, Globe, Star, FileSpreadsheet, FileJson, Copy,
   Check, ExternalLink, Filter, Sparkles, RefreshCw, Bookmark, Share2, Layers,
-  MessageCircle, AlertCircle, ShieldCheck, Download, UploadCloud, FileText, Flame
+  MessageCircle, AlertCircle, ShieldCheck, Download, UploadCloud, FileText, Flame,
+  Megaphone
 } from 'lucide-react';
 import PoorLeadsPage from './PoorLeadsPage';
 import LeadManagerPage from './LeadManagerPage';
+import MetaAdScraperPage from './MetaAdScraperPage';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
   typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
@@ -551,6 +553,17 @@ function App() {
             <span>🎯 Lead Manager</span>
           </button>
           <button
+            onClick={() => setActiveTab('meta_ads')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
+              activeTab === 'meta_ads'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Megaphone className="w-4 h-4 text-indigo-400" />
+            <span>Meta Ad Extractor</span>
+          </button>
+          <button
             onClick={() => setActiveTab('poor_leads')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
               activeTab === 'poor_leads'
@@ -604,6 +617,14 @@ function App() {
         {activeTab === 'lead_manager' && (
           <LeadManagerPage
             onExtractFromTarget={handleExtractFromTarget}
+            showToast={showToast}
+          />
+        )}
+
+        {/* Meta Ad Extractor Page */}
+        {activeTab === 'meta_ads' && (
+          <MetaAdScraperPage
+            API_BASE={API_BASE}
             showToast={showToast}
           />
         )}

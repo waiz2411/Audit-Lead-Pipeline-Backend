@@ -22,11 +22,14 @@ from .models import Job, AuditResult, Settings, Niche, NicheTarget
 from .schemas import (
     JobSchema, JobDetailSchema, AuditResultSchema, SettingsSchema, ManualJobRequest,
     ContactUpdateRequest, OutreachRequest, PoorLeadSearchRequest, PoorLeadSchema,
-    NicheCreate, NicheTargetSchema, NicheResponse, TargetToggleRequest, BulkStateToggleRequest
+    NicheCreate, NicheTargetSchema, NicheResponse, TargetToggleRequest, BulkStateToggleRequest,
+    MetaAdScrapeRequest, MetaAdLeadSchema
 )
 from .auditor.poor_website_auditor import audit_poor_website
 from .worker import worker_manager_loop, close_browser
 from .email_service import send_smtp_email, render_template
+from .services.meta_ad_scraper import scrape_meta_ads
+
 
 
 # Initialize db schemas
@@ -804,6 +807,89 @@ def export_gmaps_leads_csv(leads: List[GMapsLeadSchema]):
         io.BytesIO(output.getvalue().encode('utf-8')),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=google_maps_leads.csv"}
+    )
+
+
+@app.post("/api/v1/stream-meta-ads")
+def stream_meta_ads(payload: MetaAdScrapeRequest):
+    """
+    Stream real-time advertiser extraction and contact details enrichment from Meta Ad Library.
+    """
+    def event_generator():
+        prog_queue = queue.Queue()
+
+        def _on_progress(pct: int, msg: str):
+            prog_queue.put((pct, msg))
+
+        raw_leads_container = []
+        scrape_done = threading.Event()
+
+        def _do_scrape():
+            try:
+                res = scrape_meta_ads(
+                    payload.ads_library_url,
+                    profile_type=payload.profile_type,
+                    limit=payload.limit,
+                    progress_callback=_on_progress
+                )
+                raw_leads_container.extend(res)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Error in background Meta Ad scrape: {e}")
+            finally:
+                scrape_done.set()
+
+        thread = threading.Thread(target=_do_scrape)
+        thread.start()
+
+        yield json.dumps({"type": "progress", "percent": 5, "message": "Starting Playwright Meta Ad Library scraper..."}) + "\n"
+
+        while not scrape_done.is_set() or not prog_queue.empty():
+            try:
+                pct, msg = prog_queue.get(timeout=0.15)
+                yield json.dumps({"type": "progress", "percent": pct, "message": msg}) + "\n"
+            except queue.Empty:
+                pass
+
+        thread.join()
+        
+        leads_json = [MetaAdLeadSchema(**l).model_dump() for l in raw_leads_container]
+        yield json.dumps({
+            "type": "complete",
+            "percent": 100,
+            "message": f"Successfully extracted {len(leads_json)} Meta advertiser leads!",
+            "leads": leads_json
+        }) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/v1/meta-ads/export-csv")
+def export_meta_leads_csv(leads: List[MetaAdLeadSchema]):
+    """
+    Export scraped Meta advertiser leads to CSV format.
+    """
+    import csv
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Advertiser Name", "Profile URL", "Website URL", "Emails", "Phones", "Facebook URL", "Instagram URL"
+    ])
+    for l in leads:
+        writer.writerow([
+            l.advertiser_name,
+            l.profile_url or "",
+            l.website or "",
+            ", ".join(l.emails),
+            ", ".join(l.phones),
+            l.social_links.get("facebook") or "",
+            l.social_links.get("instagram") or ""
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=meta_ad_leads.csv"}
     )
 
 

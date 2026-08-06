@@ -205,3 +205,19 @@ class BulkStateToggleRequest(BaseModel):
     status: str # targeted, outreached, skipped, untargeted
 
 
+class MetaAdScrapeRequest(BaseModel):
+    ads_library_url: str
+    profile_type: str = "facebook" # facebook or instagram
+    limit: int = 20
+
+
+class MetaAdLeadSchema(BaseModel):
+    advertiser_name: str
+    page_id: Optional[str] = ""
+    profile_url: Optional[str] = ""
+    website: Optional[str] = ""
+    emails: List[str] = []
+    phones: List[str] = []
+    social_links: Dict[str, str] = {}
+
+
