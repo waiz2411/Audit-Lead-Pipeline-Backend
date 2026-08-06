@@ -30,7 +30,7 @@ from .auditor.poor_website_auditor import audit_poor_website
 from .worker import worker_manager_loop, close_browser
 from .email_service import send_smtp_email, render_template
 from .services.meta_ad_scraper import scrape_meta_ads
-from .services.fb_to_insta_converter import convert_fb_items_to_instagram
+from .services.fb_to_insta_converter import convert_fb_items_to_instagram, parse_csv_bytes_to_items
 from fastapi import UploadFile, File, Form
 
 
@@ -879,7 +879,7 @@ def stream_meta_ads(payload: MetaAdScrapeRequest):
 async def convert_fb_to_insta(
     file: Optional[UploadFile] = File(None),
     raw_text: Optional[str] = Form(None),
-    limit: Optional[int] = Form(500)
+    limit: Optional[int] = Form(10000)
 ):
     """
     Stream real-time resolution of Facebook URLs & Ad Library CSV exports into connected Instagram handles and contacts.
@@ -889,9 +889,7 @@ async def convert_fb_to_insta(
     if file:
         try:
             contents = await file.read()
-            import io, pandas as pd
-            df = pd.read_csv(io.BytesIO(contents), low_memory=False)
-            items = df.to_dict(orient="records")
+            items = parse_csv_bytes_to_items(contents)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Error reading uploaded CSV file: {e}")
@@ -913,7 +911,7 @@ async def convert_fb_to_insta(
             try:
                 res = convert_fb_items_to_instagram(
                     items,
-                    limit=limit or 500,
+                    limit=limit or 10000,
                     progress_callback=_on_progress
                 )
                 raw_leads_container.extend(res)

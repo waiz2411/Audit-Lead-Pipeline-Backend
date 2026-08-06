@@ -1,11 +1,11 @@
 import re
 import json
+import io
+import csv
 import logging
-import pandas as pd
 from typing import List, Dict, Any, Callable
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from playwright.sync_api import sync_playwright
 from .contact_extractor import scrape_website_contacts
 
 logger = logging.getLogger(__name__)
@@ -13,13 +13,72 @@ logger = logging.getLogger(__name__)
 # Mobile User-Agent for Facebook mobile page contact extraction
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
 
+def parse_csv_bytes_to_items(csv_bytes: bytes) -> List[Dict[str, Any]]:
+    """
+    Memory-efficient, fast CSV parser that handles large Apify / Meta Ad Library CSV dumps (up to 500k rows / 50MB+).
+    Extracts and deduplicates unique advertiser pages on the fly.
+    """
+    text_content = ""
+    try:
+        text_content = csv_bytes.decode('utf-8', errors='ignore')
+    except Exception:
+        text_content = csv_bytes.decode('latin1', errors='ignore')
+
+    reader = csv.DictReader(io.StringIO(text_content))
+    if not reader.fieldnames:
+        return []
+
+    # Map column headers flexibly
+    field_map = {}
+    for col in reader.fieldnames:
+        c_low = col.lower().strip()
+        if c_low in ["snapshot.page_profile_uri", "page_profile_uri", "facebook_url", "fb_url", "url", "page_url", "profile_url"]:
+            field_map["fb_url"] = col
+        elif c_low in ["snapshot.page_name", "page_name", "name", "advertiser_name"]:
+            field_map["page_name"] = col
+        elif c_low in ["snapshot.link_url", "link_url", "website", "website_url"]:
+            field_map["website"] = col
+        elif c_low in ["snapshot.caption", "caption"]:
+            field_map["caption"] = col
+        elif c_low in ["snapshot.body.text", "body", "text"]:
+            field_map["body"] = col
+
+    unique_items = {}
+    for row in reader:
+        fb_url = row.get(field_map.get("fb_url", ""), "").strip() if field_map.get("fb_url") else ""
+        if not fb_url:
+            # Fallback scan all values in row for facebook or instagram links
+            for val in row.values():
+                if val and ("facebook.com/" in str(val) or "instagram.com/" in str(val)):
+                    fb_url = str(val).strip()
+                    break
+
+        if not fb_url:
+            continue
+
+        key = fb_url.lower()
+        if key not in unique_items:
+            page_name = row.get(field_map.get("page_name", ""), "").strip() if field_map.get("page_name") else "Advertiser"
+            website = row.get(field_map.get("website", ""), "").strip() if field_map.get("website") else ""
+            caption = row.get(field_map.get("caption", ""), "").strip() if field_map.get("caption") else ""
+            body = row.get(field_map.get("body", ""), "").strip() if field_map.get("body") else ""
+
+            unique_items[key] = {
+                "fb_url": fb_url,
+                "snapshot.page_profile_uri": fb_url,
+                "page_name": page_name,
+                "snapshot.page_name": page_name,
+                "website": website,
+                "snapshot.link_url": website,
+                "snapshot.caption": caption,
+                "snapshot.body.text": body
+            }
+
+    return list(unique_items.values())
+
 def extract_page_id_or_username(url_or_text: str) -> str:
     """
     Extracts numeric Page ID or Facebook username from a Facebook URL or string.
-    Examples:
-    - https://www.facebook.com/61550243665702/ -> 61550243665702
-    - https://www.facebook.com/scentsnstoriesintl/ -> scentsnstoriesintl
-    - https://www.facebook.com/profile.php?id=104086772515156 -> 104086772515156
     """
     if not url_or_text:
         return ""
@@ -63,7 +122,6 @@ def lookup_meta_transparency_instagram(page_id_or_name: str) -> Dict[str, Any]:
     try:
         import requests
 
-        # Fast HTTP lookup using Playwright background fetch fallback
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9"
@@ -72,10 +130,8 @@ def lookup_meta_transparency_instagram(page_id_or_name: str) -> Dict[str, Any]:
         resp = requests.get(search_url, headers=headers, timeout=(2.0, 5.0))
         if resp.status_code == 200:
             text = resp.text
-            # Search for Instagram profile URLs in raw HTML / JSON payloads
             insta_matches = re.findall(r'instagram\.com/(?:_u/)?([A-Za-z0-9_.]+)', text)
             if insta_matches:
-                # Exclude static assets or generic terms
                 valid_handles = [h for h in insta_matches if h.lower() not in ["p", "reel", "stories", "tv", "explore", "about", "developer", "privacy", "legal"]]
                 if valid_handles:
                     handle = valid_handles[0].rstrip('.')
@@ -84,7 +140,7 @@ def lookup_meta_transparency_instagram(page_id_or_name: str) -> Dict[str, Any]:
                         "instagram_url": f"https://www.instagram.com/{handle}"
                     }
     except Exception as e:
-        logger.debug(f"Fast requests transparency lookup failed for {page_id_or_name}: {e}")
+        logger.debug(f"Fast transparency lookup failed for {page_id_or_name}: {e}")
 
     return {}
 
@@ -106,7 +162,7 @@ def process_single_item(item: Dict[str, Any], profile_type: str = "all") -> Dict
     instagram_url = ""
 
     # 1. Check if Instagram link is already present directly in item text fields
-    combined_text = f"{fb_url} {website} {item.get('snapshot.caption', '')} {item.get('snapshot.body.text', '')}"
+    combined_text = f"{fb_url} {item.get('website', '')} {item.get('snapshot.link_url', '')} {item.get('snapshot.caption', '')} {item.get('snapshot.body.text', '')}"
     direct_insta = re.findall(r'instagram\.com/(?:_u/)?([A-Za-z0-9_.]+)', combined_text)
     if direct_insta:
         valid = [h for h in direct_insta if h.lower() not in ["p", "reel", "stories", "tv", "explore", "about", "developer"]]
@@ -199,7 +255,7 @@ def process_single_item(item: Dict[str, Any], profile_type: str = "all") -> Dict
 
 def convert_fb_items_to_instagram(
     items: List[Dict[str, Any]],
-    limit: int = 500,
+    limit: int = 10000,
     progress_callback: Callable[[int, str, dict], None] = None
 ) -> List[Dict[str, Any]]:
     """
@@ -240,7 +296,7 @@ def convert_fb_items_to_instagram(
     results_map = {}
     completed_count = 0
 
-    max_workers = 20
+    max_workers = 25
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(process_single_item, item): idx
