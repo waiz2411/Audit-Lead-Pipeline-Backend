@@ -261,21 +261,24 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
               </div>
             </div>
 
-            {/* Limit Slider */}
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-xs">
-                <label className="font-semibold text-slate-300">Max Results to Scrape</label>
-                <span className="text-indigo-400 font-mono font-bold">{limit} ads</span>
-              </div>
+
+
+            {/* Limit Input */}
+            <div className="space-y-2 mb-4">
+              <label className="text-xs font-semibold text-slate-300 block">
+                Max Results to Scrape
+              </label>
               <input
-                type="range"
+                type="number"
                 min="5"
-                max="100"
-                step="5"
+                max="5000"
                 value={limit}
-                onChange={(e) => setLimit(parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-950 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                onChange={(e) => setLimit(Math.min(5000, Math.max(5, parseInt(e.target.value) || 20)))}
+                className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-slate-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono"
               />
+              <span className="text-[10px] text-slate-500 block leading-tight">
+                Enter a value between 5 and 5000. Large requests (e.g. 2000+) will take longer to load and enrich.
+              </span>
             </div>
 
             {error && (

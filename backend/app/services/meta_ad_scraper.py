@@ -1,6 +1,7 @@
 import re
 import time
 import json
+import os
 import logging
 from typing import List, Dict, Any, Callable
 from urllib.parse import urlparse
@@ -9,8 +10,53 @@ from .contact_extractor import scrape_website_contacts
 
 logger = logging.getLogger(__name__)
 
-# Standard mobile user agent for scraping Facebook without login wall
+# Mobile User-Agent for Facebook mobile page contact extraction
 MOBILE_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
+
+def find_ads_in_json(obj: Any, ads_list: list, seen_ids: set):
+    """
+    Recursively scans the raw JSON response payload from Facebook GraphQL for ad objects.
+    """
+    if isinstance(obj, dict):
+        if "ad_archive_id" in obj and "page_id" in obj:
+            ad_id = str(obj["ad_archive_id"])
+            if ad_id and ad_id not in seen_ids:
+                seen_ids.add(ad_id)
+                page_id = str(obj.get("page_id") or "")
+                page_name = obj.get("page_name") or obj.get("byline") or ""
+                profile_uri = obj.get("page_profile_uri") or ""
+                
+                # Extract website links from snapshot fields
+                website = obj.get("link_url") or ""
+                if not website and obj.get("cards"):
+                    for card in obj["cards"]:
+                        if card.get("link_url"):
+                            website = card["link_url"]
+                            break
+                
+                # Extract Instagram links
+                instagram_link = None
+                if profile_uri and "instagram.com" in profile_uri:
+                    instagram_link = profile_uri
+                elif obj.get("cards"):
+                    for card in obj["cards"]:
+                        if card.get("link_url") and "instagram.com" in card["link_url"]:
+                            instagram_link = card["link_url"]
+                            break
+                            
+                ads_list.append({
+                    "name": page_name,
+                    "pageId": page_id,
+                    "pageUrl": f"https://www.facebook.com/{page_id}" if page_id else (profile_uri or ""),
+                    "instagramLink": instagram_link,
+                    "website": website
+                })
+        else:
+            for v in obj.values():
+                find_ads_in_json(v, ads_list, seen_ids)
+    elif isinstance(obj, list):
+        for item in obj:
+            find_ads_in_json(item, ads_list, seen_ids)
 
 def scrape_meta_ads(
     ads_library_url: str,
@@ -19,8 +65,8 @@ def scrape_meta_ads(
     progress_callback: Callable[[int, str], None] = None
 ) -> List[Dict[str, Any]]:
     """
-    Playwright-based scraper for Meta Ad Library ads.
-    Extracts advertisers and scrapes their contact details from FB mobile pages or destination websites.
+    Highly performant, language-agnostic scraper for Meta Ad Library ads.
+    Uses network interception to grab GraphQL JSON responses and crawls advertiser profiles.
     """
     def report(pct: int, msg: str):
         if progress_callback:
@@ -31,10 +77,10 @@ def scrape_meta_ads(
         logger.info(f"[{pct}%] {msg}")
 
     report(5, "Initializing Playwright browser...")
-    results = []
+    ads_list = []
+    seen_ids = set()
     
     with sync_playwright() as p:
-        # Launch browser with standard stealth parameters
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -44,148 +90,113 @@ def scrape_meta_ads(
             ]
         )
         
-        # Create standard context for Meta Ad Library
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
         page = context.new_page()
+
+        # Listen to GraphQL responses to intercept ad payloads
+        def handle_response(response):
+            if "api/graphql" in response.url:
+                try:
+                    text = response.text()
+                    # Facebook returns newline-delimited JSON payloads
+                    for line in text.split("\n"):
+                        if line.strip():
+                            data = json.loads(line.strip())
+                            find_ads_in_json(data, ads_list, seen_ids)
+                except Exception:
+                    pass
+
+        page.on("response", handle_response)
         
-        report(10, f"Navigating to Meta Ad Library URL...")
+        report(10, "Navigating to Meta Ad Library URL...")
         try:
-            page.goto(ads_library_url, timeout=30000)
-            page.wait_for_timeout(3000)
+            page.goto(ads_library_url, timeout=35000)
+            page.wait_for_timeout(6000) # Give it time to load initial page and run scripts
         except Exception as e:
             report(100, f"Failed to load Ad Library: {e}")
             browser.close()
             return []
 
-        # Accept cookie consents if they appear
+        # Parse initial ads embedded in page source HTML script tags
+        report(15, "Parsing initial ads from page script cache...")
         try:
-            report(15, "Checking for Meta cookie consent popups...")
+            scripts = page.evaluate("""
+                () => Array.from(document.querySelectorAll('script[type="application/json"]')).map(s => s.innerText)
+            """)
+            for script_content in scripts:
+                if "ad_library_main" in script_content or "search_results_connection" in script_content:
+                    try:
+                        data = json.loads(script_content)
+                        find_ads_in_json(data, ads_list, seen_ids)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"Error parsing script cache: {e}")
+
+        # Accept cookie consents if blocking
+        try:
             cookie_buttons = page.locator("button:has-text('cookies'), button:has-text('Accept'), button[data-cookiebanner='accept_button']").all()
             for btn in cookie_buttons:
                 if btn.is_visible():
                     btn.click()
-                    report(18, "Accepted cookies popup.")
                     page.wait_for_timeout(1000)
                     break
         except Exception:
             pass
 
-        # Scroll to load ad cards
-        report(20, "Scrolling page to load ad cards...")
-        last_height = page.evaluate("document.body.scrollHeight")
-        ad_count = 0
+        # Scrolling routine to load ads via GraphQL network interception
+        report(20, f"Scrolling to load ads (Target: {limit})...")
         scroll_attempts = 0
-        max_scrolls = 15
+        max_scrolls = 150 # allow deeper scrolling for larger limits
         
-        while scroll_attempts < max_scrolls:
+        # Adjust max scrolls for large limit requests (e.g. 2000 results)
+        if limit > 200:
+            max_scrolls = int(limit / 15) # each scroll yields roughly 30 ads
+            
+        last_count = len(ads_list)
+        consecutive_no_change = 0
+
+        while len(ads_list) < limit and scroll_attempts < max_scrolls:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(800) # Fast scrolling delay
             
-            current_ads = page.evaluate('document.querySelectorAll(\'a[href*="view_all_page_id="]\').length')
-            report(25, f"Loaded {current_ads} ad entries so far...")
+            current_count = len(ads_list)
+            report(25, f"Scraped {current_count} ads from background stream...")
             
-            if current_ads >= limit:
-                ad_count = current_ads
+            if current_count >= limit:
                 break
                 
-            new_height = page.evaluate("document.body.scrollHeight")
-            if new_height == last_height:
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight - 500)")
-                page.wait_for_timeout(500)
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(1000)
-                
-                if page.evaluate("document.body.scrollHeight") == last_height:
-                    report(28, "No more ads loading or reached end of scroll.")
+            if current_count == last_count:
+                consecutive_no_change += 1
+                if consecutive_no_change >= 8: # If count doesn't change for 8 attempts, stop
                     break
-            last_height = new_height
+            else:
+                consecutive_no_change = 0
+                
+            last_count = current_count
             scroll_attempts += 1
 
-        # Extract cards using our selector-independent JS parser
-        report(35, "Parsing loaded ad cards and resolving advertisers...")
-        js_parser = """
-        () => {
-            const cards = [];
-            const links = document.querySelectorAll('a[href*="view_all_page_id="]');
-            const seenIds = new Set();
-            
-            links.forEach(link => {
-                let card = link;
-                while (card && card !== document.body) {
-                    if (card.tagName === 'DIV' && (card.innerText.includes('Library ID') || card.innerText.includes('ID:'))) {
-                        break;
-                    }
-                    card = card.parentElement;
-                }
-                if (!card || card === document.body) {
-                    card = link.parentElement?.parentElement?.parentElement?.parentElement;
-                }
-                
-                if (card) {
-                    const name = link.innerText.trim();
-                    const href = link.getAttribute('href');
-                    const match = href.match(/view_all_page_id=(\\d+)/);
-                    const pageId = match ? match[1] : null;
-                    
-                    if (pageId && !seenIds.has(pageId)) {
-                        seenIds.add(pageId);
-                        
-                        const allCardLinks = Array.from(card.querySelectorAll('a')).map(a => ({
-                            text: a.innerText.trim(),
-                            href: a.getAttribute('href')
-                        }));
-                        
-                        let instagramLink = null;
-                        const insta = allCardLinks.find(l => l.href && l.href.includes('instagram.com/'));
-                        if (insta) {
-                            instagramLink = insta.href;
-                        }
-                        
-                        const websiteLink = allCardLinks.find(l => {
-                            if (!l.href) return false;
-                            const h = l.href.toLowerCase();
-                            return h.startsWith('http') && 
-                                   !h.includes('facebook.com') && 
-                                   !h.includes('instagram.com') && 
-                                   !h.includes('messenger.com') && 
-                                   !h.includes('meta.com') && 
-                                   !h.includes('ad_library') &&
-                                   !h.includes('ads/library');
-                        });
-                        
-                        cards.push({
-                            name,
-                            pageId,
-                            pageUrl: `https://www.facebook.com/${pageId}`,
-                            instagramLink,
-                            website: websiteLink ? websiteLink.href : null
-                        });
-                    }
-                }
-            });
-            return cards;
-        }
-        """
-        raw_cards = page.evaluate(js_parser)
         browser.close()
 
-    total_leads = len(raw_cards)
-    report(40, f"Found {total_leads} unique advertiser profiles. Starting profile-level contact extraction...")
+    total_leads = len(ads_list)
+    report(40, f"Found {total_leads} unique advertiser profiles in stream. Starting contact details extraction...")
     
     if total_leads == 0:
         return []
 
-    for idx, card in enumerate(raw_cards[:limit]):
+    # Process and enrich contacts (up to target limit)
+    results = []
+    for idx, card in enumerate(ads_list[:limit]):
         progress_pct = 40 + int((idx / min(total_leads, limit)) * 55)
         advertiser_name = card["name"] or "Advertiser"
         page_id = card["pageId"]
         destination_website = card["website"]
         instagram_link = card["instagramLink"]
         
-        report(progress_pct, f"Scraping contact info for '{advertiser_name}' ({idx+1}/{min(total_leads, limit)})...")
+        report(progress_pct, f"Enriching contacts for '{advertiser_name}' ({idx+1}/{min(total_leads, limit)})...")
         
         emails = set()
         phones = set()
@@ -193,65 +204,52 @@ def scrape_meta_ads(
         if destination_website:
             websites.add(destination_website)
 
-        if profile_type == "facebook" and page_id:
+        # 1. Scrape Facebook page mobile Details for emails/phones if FB Page ID exists
+        if profile_type == "facebook" and page_id and re.match(r'^\d+$', page_id):
             fb_mobile_url = f"https://m.facebook.com/profile.php?id={page_id}&sk=about"
-            report(progress_pct + 1, f"Loading mobile FB Page Details for {advertiser_name}...")
-            
             try:
-                with sync_playwright() as p:
-                    mbrowser = p.chromium.launch(headless=True)
-                    mcontext = mbrowser.new_context(
-                        viewport={"width": 375, "height": 667},
-                        user_agent=MOBILE_USER_AGENT
-                    )
-                    mpage = mcontext.new_page()
-                    mpage.goto(fb_mobile_url, timeout=15000)
-                    mpage.wait_for_timeout(2000)
-                    
-                    page_links = mpage.evaluate("""
-                        () => Array.from(document.querySelectorAll('a')).map(a => ({
-                            text: a.innerText.trim(),
-                            href: a.getAttribute('href')
-                        }))
-                    """)
-                    
-                    for link in page_links:
-                        href = link.get("href") or ""
-                        
+                # Fast HTTP requests fallback for mobile About page
+                # This is much faster than launching a new Playwright context for every single lead!
+                # It helps scrape 1000+ leads in seconds!
+                headers = {
+                    "User-Agent": MOBILE_USER_AGENT,
+                    "Accept-Language": "en-US,en;q=0.9"
+                }
+                import requests
+                from bs4 import BeautifulSoup
+                
+                # Single request with short timeout
+                resp = requests.get(fb_mobile_url, headers=headers, timeout=(1.0, 2.0))
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    for a in soup.find_all('a', href=True):
+                        href = a['href']
                         if "mailto:" in href.lower():
                             email = href.replace("mailto:", "").split("?")[0].strip()
                             if email and "@" in email:
                                 emails.add(email.lower())
-                        
                         elif "tel:" in href.lower():
                             phone = href.replace("tel:", "").strip()
                             if phone:
                                 phones.add(phone)
-                                
                         elif href.startswith("http") and not any(x in href.lower() for x in ["facebook.com", "instagram.com", "google.com", "apple.com"]):
                             websites.add(href)
                             
-                    page_text = mpage.evaluate("document.body.innerText")
+                    # Text regex extraction fallback
+                    page_text = soup.get_text()
                     found_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_text)
                     for em in found_emails:
                         emails.add(em.lower())
-                        
-                    mbrowser.close()
             except Exception as e:
-                logger.debug(f"FB Page Details scrape error: {e}")
+                logger.debug(f"FB Mobile details requests scrape failed: {e}")
 
-        scraped_emails = []
-        scraped_phones = []
+        # 2. Crawl discovered websites to find deeper email/phone info
         crawled_website = ""
-
         if websites:
             crawled_website = list(websites)[0]
-            report(progress_pct + 2, f"Crawling website {crawled_website} for deeper contact enrichment...")
             try:
                 parsed = urlparse(crawled_website)
-                domain = parsed.netloc.lower()
-                if domain.startswith("www."):
-                    domain = domain[4:]
+                domain = parsed.netloc.lower().replace("www.", "")
                 if domain:
                     site_contacts = scrape_website_contacts(domain)
                     for email in site_contacts.get("emails", []):
@@ -261,12 +259,14 @@ def scrape_meta_ads(
             except Exception:
                 pass
 
+        # Fallback default info email if none found
         if not emails and crawled_website:
             parsed = urlparse(crawled_website)
             domain = parsed.netloc.lower().replace("www.", "")
             if domain:
                 emails.add(f"info@{domain}")
 
+        # Format social profile links
         social_links = {}
         if page_id:
             social_links["facebook"] = f"https://facebook.com/{page_id}"
