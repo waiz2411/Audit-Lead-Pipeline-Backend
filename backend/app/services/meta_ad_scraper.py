@@ -5,6 +5,7 @@ import os
 import logging
 from typing import List, Dict, Any, Callable
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import sync_playwright
 from .contact_extractor import scrape_website_contacts
 
@@ -49,7 +50,8 @@ def find_ads_in_json(obj: Any, ads_list: list, seen_ids: set):
                     "pageId": page_id,
                     "pageUrl": f"https://www.facebook.com/{page_id}" if page_id else (profile_uri or ""),
                     "instagramLink": instagram_link,
-                    "website": website
+                    "website": website,
+                    "profileUri": profile_uri
                 })
         else:
             for v in obj.values():
@@ -101,7 +103,6 @@ def scrape_meta_ads(
             if "api/graphql" in response.url:
                 try:
                     text = response.text()
-                    # Facebook returns newline-delimited JSON payloads
                     for line in text.split("\n"):
                         if line.strip():
                             data = json.loads(line.strip())
@@ -152,16 +153,34 @@ def scrape_meta_ads(
         scroll_attempts = 0
         max_scrolls = 150 # allow deeper scrolling for larger limits
         
-        # Adjust max scrolls for large limit requests (e.g. 2000 results)
+        # Adjust max scrolls for large limit requests
         if limit > 200:
-            max_scrolls = int(limit / 15) # each scroll yields roughly 30 ads
+            max_scrolls = int(limit / 12)
             
         last_count = len(ads_list)
         consecutive_no_change = 0
 
         while len(ads_list) < limit and scroll_attempts < max_scrolls:
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(800) # Fast scrolling delay
+            # Scroll down in small steps to reliably trigger lazy-load listeners
+            for _ in range(4):
+                page.evaluate("window.scrollBy(0, 1000)")
+                page.wait_for_timeout(150)
+                
+            # Automatically detect and dismiss login prompts or popups that block scroll inputs
+            try:
+                for btn in page.locator("div[role='dialog'] button, div[role='dialog'] [role='button']").all():
+                    aria_label = btn.get_attribute("aria-label") or ""
+                    text = btn.inner_text() or ""
+                    # Match standard dismiss keywords across multiple languages (English, Urdu, Hindi, Spanish)
+                    if any(x in aria_label.lower() or x in text.lower() for x in ["close", "dismiss", "बंद करें", "خارج", "x"]):
+                        btn.click()
+                        page.wait_for_timeout(300)
+                        break
+            except Exception:
+                pass
+
+            # Yield time for data to stream in
+            page.wait_for_timeout(800)
             
             current_count = len(ads_list)
             report(25, f"Scraped {current_count} ads from background stream...")
@@ -171,7 +190,10 @@ def scrape_meta_ads(
                 
             if current_count == last_count:
                 consecutive_no_change += 1
-                if consecutive_no_change >= 8: # If count doesn't change for 8 attempts, stop
+                # Wait longer on subsequent empty attempts to give network time to load next query batch
+                if consecutive_no_change >= 4:
+                    page.wait_for_timeout(1500)
+                if consecutive_no_change >= 12: # Break if no change after 12 attempts
                     break
             else:
                 consecutive_no_change = 0
@@ -182,21 +204,22 @@ def scrape_meta_ads(
         browser.close()
 
     total_leads = len(ads_list)
-    report(40, f"Found {total_leads} unique advertiser profiles in stream. Starting contact details extraction...")
+    report(40, f"Found {total_leads} unique advertiser profiles in stream. Starting parallel contact details extraction...")
     
     if total_leads == 0:
         return []
 
-    # Process and enrich contacts (up to target limit)
-    results = []
-    for idx, card in enumerate(ads_list[:limit]):
-        progress_pct = 40 + int((idx / min(total_leads, limit)) * 55)
+    # Process and enrich contacts in parallel (up to target limit)
+    results_map = {}
+    completed_count = 0
+    total_to_enrich = min(total_leads, limit)
+
+    def enrich_single_lead(idx, card):
         advertiser_name = card["name"] or "Advertiser"
         page_id = card["pageId"]
         destination_website = card["website"]
         instagram_link = card["instagramLink"]
-        
-        report(progress_pct, f"Enriching contacts for '{advertiser_name}' ({idx+1}/{min(total_leads, limit)})...")
+        profile_uri = card.get("profileUri") or ""
         
         emails = set()
         phones = set()
@@ -205,12 +228,9 @@ def scrape_meta_ads(
             websites.add(destination_website)
 
         # 1. Scrape Facebook page mobile Details for emails/phones if FB Page ID exists
-        if profile_type == "facebook" and page_id and re.match(r'^\d+$', page_id):
+        if page_id and re.match(r'^\d+$', page_id):
             fb_mobile_url = f"https://m.facebook.com/profile.php?id={page_id}&sk=about"
             try:
-                # Fast HTTP requests fallback for mobile About page
-                # This is much faster than launching a new Playwright context for every single lead!
-                # It helps scrape 1000+ leads in seconds!
                 headers = {
                     "User-Agent": MOBILE_USER_AGENT,
                     "Accept-Language": "en-US,en;q=0.9"
@@ -218,8 +238,7 @@ def scrape_meta_ads(
                 import requests
                 from bs4 import BeautifulSoup
                 
-                # Single request with short timeout
-                resp = requests.get(fb_mobile_url, headers=headers, timeout=(1.0, 2.0))
+                resp = requests.get(fb_mobile_url, headers=headers, timeout=(1.5, 3.0))
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, 'html.parser')
                     for a in soup.find_all('a', href=True):
@@ -235,13 +254,12 @@ def scrape_meta_ads(
                         elif href.startswith("http") and not any(x in href.lower() for x in ["facebook.com", "instagram.com", "google.com", "apple.com"]):
                             websites.add(href)
                             
-                    # Text regex extraction fallback
                     page_text = soup.get_text()
                     found_emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_text)
                     for em in found_emails:
                         emails.add(em.lower())
-            except Exception as e:
-                logger.debug(f"FB Mobile details requests scrape failed: {e}")
+            except Exception:
+                pass
 
         # 2. Crawl discovered websites to find deeper email/phone info
         crawled_website = ""
@@ -266,16 +284,20 @@ def scrape_meta_ads(
             if domain:
                 emails.add(f"info@{domain}")
 
-        # Format social profile links
+        # Format social profile links (strictly verified, no fake fallbacks)
         social_links = {}
-        if page_id:
+        
+        # Only add Facebook link if advertiser is known to have a Facebook Page
+        if page_id and (profile_type == "facebook" or (profile_uri and "facebook.com" in profile_uri)):
             social_links["facebook"] = f"https://facebook.com/{page_id}"
+            
+        # Only add Instagram link if a valid instagram URL is parsed
         if instagram_link:
             social_links["instagram"] = instagram_link
-        elif profile_type == "instagram" and advertiser_name:
-            social_links["instagram"] = f"https://instagram.com/{advertiser_name.replace(' ', '').lower()}"
+        elif profile_uri and "instagram.com" in profile_uri:
+            social_links["instagram"] = profile_uri
 
-        results.append({
+        return {
             "advertiser_name": advertiser_name,
             "page_id": page_id,
             "profile_url": social_links.get("instagram") if profile_type == "instagram" else social_links.get("facebook"),
@@ -283,7 +305,40 @@ def scrape_meta_ads(
             "emails": sorted(list(emails)),
             "phones": sorted(list(phones)),
             "social_links": social_links
-        })
+        }
 
+    # Run up to 15 workers in parallel to maximize speed
+    max_workers = 15
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(enrich_single_lead, idx, card): idx 
+            for idx, card in enumerate(ads_list[:limit])
+        }
+        
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                lead_data = future.result()
+                results_map[idx] = lead_data
+            except Exception as e:
+                logger.error(f"Error enriching lead {idx}: {e}")
+                results_map[idx] = {
+                    "advertiser_name": ads_list[idx]["name"] or "Advertiser",
+                    "page_id": ads_list[idx]["pageId"],
+                    "profile_url": ads_list[idx]["pageUrl"],
+                    "website": ads_list[idx]["website"],
+                    "emails": [],
+                    "phones": [],
+                    "social_links": {}
+                }
+            
+            completed_count += 1
+            progress_pct = 40 + int((completed_count / total_to_enrich) * 55)
+            if completed_count % 5 == 0 or completed_count == total_to_enrich:
+                report(progress_pct, f"Enriched contacts for {completed_count}/{total_to_enrich} profiles...")
+
+    # Reassemble results in order
+    results = [results_map[i] for i in range(total_to_enrich)]
+    
     report(100, f"Finished extraction! Scraped {len(results)} advertiser profiles.")
     return results
