@@ -854,7 +854,7 @@ def stream_meta_ads(payload: MetaAdScrapeRequest):
                 
                 payload_data = {"type": "progress", "percent": pct, "message": msg}
                 if lead_data:
-                    payload_data["lead"] = MetaAdLeadSchema(**lead_data).model_dump()
+                    payload_data["lead"] = lead_data
                 yield json.dumps(payload_data) + "\n"
             except queue.Empty:
                 pass
