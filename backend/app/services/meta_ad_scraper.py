@@ -70,12 +70,15 @@ def scrape_meta_ads(
     Highly performant, language-agnostic scraper for Meta Ad Library ads.
     Uses network interception to grab GraphQL JSON responses and crawls advertiser profiles.
     """
-    def report(pct: int, msg: str):
+    def report(pct: int, msg: str, lead_data: dict = None):
         if progress_callback:
             try:
-                progress_callback(pct, msg)
+                progress_callback(pct, msg, lead_data)
             except Exception:
-                pass
+                try:
+                    progress_callback(pct, msg)
+                except Exception:
+                    pass
         logger.info(f"[{pct}%] {msg}")
 
     report(5, "Initializing Playwright browser...")
@@ -351,9 +354,11 @@ def scrape_meta_ads(
         
         for future in as_completed(futures):
             idx = futures[future]
+            curr_lead = None
             try:
                 lead_data = future.result()
                 results_map[idx] = lead_data
+                curr_lead = lead_data
             except Exception as e:
                 logger.error(f"Error enriching lead {idx}: {e}")
                 results_map[idx] = {
@@ -365,11 +370,15 @@ def scrape_meta_ads(
                     "phones": [],
                     "social_links": {}
                 }
+                curr_lead = results_map[idx]
             
             completed_count += 1
             progress_pct = 40 + int((completed_count / total_to_enrich) * 55)
-            if completed_count % 5 == 0 or completed_count == total_to_enrich:
-                report(progress_pct, f"Enriched contacts for {completed_count}/{total_to_enrich} profiles...")
+            report(
+                progress_pct, 
+                f"Enriched contacts for '{curr_lead['advertiser_name']}' ({completed_count}/{total_to_enrich})...",
+                curr_lead
+            )
 
     # Reassemble results in order
     results = [results_map[i] for i in range(total_to_enrich)]

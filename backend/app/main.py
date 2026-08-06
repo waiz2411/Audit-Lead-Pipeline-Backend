@@ -809,7 +809,6 @@ def export_gmaps_leads_csv(leads: List[GMapsLeadSchema]):
         headers={"Content-Disposition": "attachment; filename=google_maps_leads.csv"}
     )
 
-
 @app.post("/api/v1/stream-meta-ads")
 def stream_meta_ads(payload: MetaAdScrapeRequest):
     """
@@ -818,8 +817,8 @@ def stream_meta_ads(payload: MetaAdScrapeRequest):
     def event_generator():
         prog_queue = queue.Queue()
 
-        def _on_progress(pct: int, msg: str):
-            prog_queue.put((pct, msg))
+        def _on_progress(pct: int, msg: str, lead_data: dict = None):
+            prog_queue.put((pct, msg, lead_data))
 
         raw_leads_container = []
         scrape_done = threading.Event()
@@ -846,8 +845,17 @@ def stream_meta_ads(payload: MetaAdScrapeRequest):
 
         while not scrape_done.is_set() or not prog_queue.empty():
             try:
-                pct, msg = prog_queue.get(timeout=0.15)
-                yield json.dumps({"type": "progress", "percent": pct, "message": msg}) + "\n"
+                item = prog_queue.get(timeout=0.15)
+                if len(item) == 3:
+                    pct, msg, lead_data = item
+                else:
+                    pct, msg = item
+                    lead_data = None
+                
+                payload_data = {"type": "progress", "percent": pct, "message": msg}
+                if lead_data:
+                    payload_data["lead"] = MetaAdLeadSchema(**lead_data).model_dump()
+                yield json.dumps(payload_data) + "\n"
             except queue.Empty:
                 pass
 

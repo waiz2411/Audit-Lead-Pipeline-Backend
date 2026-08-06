@@ -111,6 +111,13 @@ export default function MetaAdScraperPage({ API_BASE, showToast }) {
                 setProgressMessage(data.message);
                 addLog(data.message);
               }
+              if (data.lead) {
+                setLeads(prevLeads => {
+                  const exists = prevLeads.some(l => l.page_id === data.lead.page_id && l.advertiser_name === data.lead.advertiser_name);
+                  if (exists) return prevLeads;
+                  return [...prevLeads, data.lead];
+                });
+              }
             } else if (data.type === 'complete') {
               setProgressPercent(100);
               setProgressMessage(data.message || 'Scrape complete!');
