@@ -163,19 +163,42 @@ def scrape_meta_ads(
         while len(ads_list) < limit and scroll_attempts < max_scrolls:
             # Scroll down in small steps to reliably trigger lazy-load listeners
             for _ in range(4):
-                page.evaluate("window.scrollBy(0, 1000)")
-                page.wait_for_timeout(150)
+                page.evaluate("""
+                    () => {
+                        window.scrollBy(0, 1000);
+                        document.querySelectorAll('div').forEach(el => {
+                            const style = window.getComputedStyle(el);
+                            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+                                el.scrollBy(0, 1000);
+                            }
+                        });
+                    }
+                """)
+                page.wait_for_timeout(200)
                 
             # Automatically detect and dismiss login prompts or popups that block scroll inputs
             try:
-                for btn in page.locator("div[role='dialog'] button, div[role='dialog'] [role='button']").all():
-                    aria_label = btn.get_attribute("aria-label") or ""
-                    text = btn.inner_text() or ""
-                    # Match standard dismiss keywords across multiple languages (English, Urdu, Hindi, Spanish)
-                    if any(x in aria_label.lower() or x in text.lower() for x in ["close", "dismiss", "बंद करें", "خارج", "x"]):
-                        btn.click()
-                        page.wait_for_timeout(300)
-                        break
+                # Target close buttons of any tag inside dialogs (including <a>, <i>, <button>, etc.)
+                close_selectors = [
+                    "div[role='dialog'] a[aria-label*='Close']",
+                    "div[role='dialog'] [aria-label*='Close']",
+                    "div[role='dialog'] [aria-label*='close']",
+                    "div[role='dialog'] button[aria-label*='Close']",
+                    "div[role='dialog'] button:has-text('Close')",
+                    "[aria-label*='Close']",
+                    "[aria-label*='close']",
+                    "[aria-label*='Dismiss']",
+                    "[aria-label*='dismiss']",
+                    "[aria-label*='خارج']",
+                    "[aria-label*='بند']"
+                ]
+                for selector in close_selectors:
+                    elements = page.locator(selector).all()
+                    for el in elements:
+                        if el.is_visible():
+                            el.click()
+                            page.wait_for_timeout(300)
+                            break
             except Exception:
                 pass
 
@@ -185,6 +208,11 @@ def scrape_meta_ads(
             current_count = len(ads_list)
             report(25, f"Scraped {current_count} ads from background stream...")
             
+            # Check if page URL has login/cookie wall redirection
+            current_url = page.url
+            if "login" in current_url.lower() or "checkpoint" in current_url.lower() or "captcha" in current_url.lower():
+                report(27, f"[WARNING] Meta redirected to login or security check page: {current_url}")
+            
             if current_count >= limit:
                 break
                 
@@ -193,6 +221,12 @@ def scrape_meta_ads(
                 # Wait longer on subsequent empty attempts to give network time to load next query batch
                 if consecutive_no_change >= 4:
                     page.wait_for_timeout(1500)
+                    try:
+                        os.makedirs("static", exist_ok=True)
+                        page.screenshot(path="static/meta_ad_scroll_error.png")
+                        logger.warning(f"Scrolling stuck at {current_count}. Saved diagnostics. URL: {current_url}")
+                    except Exception:
+                        pass
                 if consecutive_no_change >= 12: # Break if no change after 12 attempts
                     break
             else:
